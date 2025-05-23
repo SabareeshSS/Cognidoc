@@ -1,0 +1,3 @@
+node_modules/
+out/
+python_backend/chroma_db_electron/

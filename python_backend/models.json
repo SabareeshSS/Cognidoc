@@ -1,0 +1,22 @@
+{
+    "model_categories": {
+        "querying_models": [
+            "granite3.3:8b",
+            "llama3.1:8b",
+            "deepseek-r1:7b",
+            "llava:13b",
+            "llava-llama3:8b-v1.1-q4_0"
+        ],
+        "image_embedding_models": [
+            "granite3.3:8b",
+            "llava:13b",
+            "llava-llama3:8b-v1.1-q4_0"
+        ],
+        "text_embedding_models": [
+            "all-minilm:latest",
+            "nomic-embed-text:latest",
+            "granite3.3:8b",
+            "llama3.1:8b"
+        ]
+    }
+}
