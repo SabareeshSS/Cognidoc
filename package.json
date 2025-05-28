@@ -4,7 +4,8 @@
   "description": "Electron GUI for Cognidoc Python backend",
   "main": "electron-main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dev": "electron ."
   },
   "keywords": [
     "Electron",

@@ -28,22 +28,32 @@ import tempfile
 import chromadb
 import fitz  # PyMuPDF
 import ollama
+from pathlib import Path # Added import statement
 
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Optional, Any, Tuple, Union
 from chromadb import Collection
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
-from langchain_chroma import Chroma
 from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
-from langchain_core.vectorstores import VectorStoreRetriever
+
+SCRIPT_DIR = os.path.dirname(__file__) # Added SCRIPT_DIR definition
+
+# Configure logging (moved earlier)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 # Ensure paths are relative to this script's location or use absolute paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CHROMA_PERSIST_DIR = os.path.join(SCRIPT_DIR, "chroma_db_electron")
+# Use user's home directory for persistent storage to avoid permission issues
+USER_HOME_DIR = Path.home()
+CHROMA_PERSIST_DIR = USER_HOME_DIR / ".cognidoc_data" / "chroma_db_persistent"
 COLLECTION_NAME = "user_doc_collection_electron_v1"
 
 # Model Configuration - Initialize with None, will be set from models.json
@@ -95,18 +105,9 @@ current_querying_model: str = LLM_MODEL
 processed_files: Dict[str, Dict[str, Any]] = {}  # file_path -> state dict
 # State will include:
 # - processing_mode: str
-# - retriever: VectorStoreRetriever
 # - file_name: str
 # Ensure the Chroma directory exists
 os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
-)
-logger = logging.getLogger(__name__)
 
 # --- Helper Functions ---
 def is_image_file(file_path: Optional[str]) -> bool:
@@ -135,9 +136,25 @@ def _get_chroma_collection(persist_dir: str = CHROMA_PERSIST_DIR,
     Returns:
         Collection: ChromaDB collection object
     """
-    client = chromadb.PersistentClient(path=persist_dir)
+    client = chromadb.PersistentClient(path=str(persist_dir)) # Convert to string
     collection = client.get_or_create_collection(name=collection_name)
     return collection
+
+def _reset_collection_and_session(reason: str):
+    """Clears the ChromaDB collection and the processed_files list."""
+    global processed_files, COLLECTION_NAME, CHROMA_PERSIST_DIR
+    logger.warning(f"Resetting ChromaDB collection ('{COLLECTION_NAME}') and processed files list due to: {reason}")
+    try:
+        client = chromadb.PersistentClient(path=str(CHROMA_PERSIST_DIR))
+        client.delete_collection(name=COLLECTION_NAME)
+        logger.info(f"Collection '{COLLECTION_NAME}' deleted successfully.")
+        # Recreate it immediately
+        _get_chroma_collection()
+        logger.info(f"Collection '{COLLECTION_NAME}' recreated successfully.")
+    except Exception as e:
+        logger.error(f"Error during collection reset for '{COLLECTION_NAME}': {e}. Manual check might be needed.", exc_info=True)
+    processed_files.clear()
+    logger.info("Processed files list has been cleared.")
 
 def _generate_uuid(prefix: str = "") -> str:
     """
@@ -208,13 +225,14 @@ def get_available_models() -> List[str]:
 
     except Exception as e:
         logger.error(f"Error loading models from models.json: {e}", exc_info=True)
-        default_models = ["llava-llama3:8b-v1.1-q4_0"]
+        error_message = f"Error loading models: {str(e)}. Check models.json format and file permissions. Using default model."
         send_response({
-            "type": "models_list",
-            "models": default_models,
-            "message": f"Error: {str(e)}. Using default model."
+            "type": "error",
+            "models": [],
+            "message": error_message,
+            "request_id": "unknown" # Add request_id for better tracking
         })
-        return default_models
+        return []
 
 def set_llm_model(model_name: str) -> str:
     """Set the current LLM model (simplified version)."""
@@ -248,15 +266,20 @@ def set_embedding_model(model_name: str) -> str:
     """
     global current_embedding_model
     try:
+        if model_name == current_embedding_model:
+            logger.info(f"Text embedding model is already set to: {model_name}")
+            return f"Text embedding model already set to {model_name}."
+
         available_models = get_models_by_category("text_embedding_models")
-        
-        if model_name in available_models:
-            current_embedding_model = model_name
-            logger.info(f"Set embedding model to: {model_name}")
-            return f"Successfully set embedding model to {model_name}"
-        else:
-            logger.warning(f"Requested model {model_name} not in available models. Using {current_embedding_model}")
-            return f"Model {model_name} not available. Using {current_embedding_model}"
+        if model_name not in available_models:
+            logger.warning(f"Requested text embedding model '{model_name}' not in available models. Using '{current_embedding_model}'.")
+            return f"Model '{model_name}' not available for text embedding. Using '{current_embedding_model}'."
+
+        _reset_collection_and_session(f"text embedding model changed from '{current_embedding_model}' to '{model_name}'")
+        current_embedding_model = model_name
+        logger.info(f"Set text embedding model to: {model_name}. Database and session reset.")
+        return f"Successfully set text embedding model to {model_name}. Database and session have been reset."
+
     except Exception as e:
         logger.error(f"Error setting embedding model: {e}", exc_info=True)
         return f"Error setting model: {str(e)}. Using {current_embedding_model}"
@@ -304,15 +327,19 @@ def set_image_embedding_model(model_name: str) -> str:
     """
     global current_image_embedding_model
     try:
+        if model_name == current_image_embedding_model:
+            logger.info(f"Image embedding model is already set to: {model_name}")
+            return f"Image embedding model already set to {model_name}."
+
         available_models = get_models_by_category("image_embedding_models")
-        
-        if model_name in available_models:
-            current_image_embedding_model = model_name
-            logger.info(f"Set image embedding model to: {model_name}")
-            return f"Successfully set image embedding model to {model_name}"
-        else:
-            logger.warning(f"Requested model {model_name} not in available models. Using {current_image_embedding_model}")
-            return f"Model {model_name} not available. Using {current_image_embedding_model}"
+        if model_name not in available_models:
+            logger.warning(f"Requested image embedding model '{model_name}' not in available models. Using '{current_image_embedding_model}'.")
+            return f"Model '{model_name}' not available for image embedding. Using '{current_image_embedding_model}'."
+
+        _reset_collection_and_session(f"image embedding model changed from '{current_image_embedding_model}' to '{model_name}'")
+        current_image_embedding_model = model_name
+        logger.info(f"Set image embedding model to: {model_name}. Database and session reset.")
+        return f"Successfully set image embedding model to {model_name}. Database and session have been reset."
     except Exception as e:
         logger.error(f"Error setting image embedding model: {e}", exc_info=True)
         return f"Error setting model: {str(e)}. Using {current_image_embedding_model}"
@@ -372,8 +399,8 @@ def get_models_by_category(category: str) -> List[str]:
 # --- Placeholder for brevity - Assume these functions exist here ---
 # --- (Copy the implementations from the original script) ---
 # Example:
-def load_and_split_text_document(file_path: str, chunk_size: int, chunk_overlap: int) -> Optional[List[Document]]:
-    """Loads a TEXT-BASED document (PDF, TXT, DOCX), splits it, and cleans metadata."""
+def _load_text_content_from_file(file_path: str) -> Optional[List[Document]]:
+    """Loads a TEXT-BASED document (PDF, TXT, DOCX) and returns a list of Document objects."""
     logger.info(f"Loading text document: {file_path}")
     file_extension = os.path.splitext(file_path)[1].lower()
     documents: Optional[List[Document]] = None
@@ -410,24 +437,53 @@ def load_and_split_text_document(file_path: str, chunk_size: int, chunk_overlap:
         if not documents:
             logger.warning(f"No content loaded from {file_path}. File might be empty or unreadable.")
             return []
+        
+        # Ensure source metadata is present
+        for doc_obj in documents:
+            if 'source' not in doc_obj.metadata:
+                doc_obj.metadata['source'] = os.path.basename(file_path)
+            # Ensure page numbers are correctly formatted if present (example for PyMuPDFLoader)
+            if 'page' in doc_obj.metadata and isinstance(doc_obj.metadata['page'], int):
+                 doc_obj.metadata['page_number'] = doc_obj.metadata['page'] + 1 # 0-indexed to 1-indexed
 
-        logger.info(f"Loaded {len(documents)} initial document sections.")
+        logger.info(f"Successfully loaded {len(documents)} sections from {file_path}.")
+        return documents
+
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading document {file_path}: {e}", exc_info=True)
+        return None
+
+def load_and_split_text_document(documents: List[Document], chunk_size: int, chunk_overlap: int) -> Optional[List[Document]]:
+    """
+    Splits loaded documents into text chunks using RecursiveCharacterTextSplitter
+    and cleans metadata using filter_complex_metadata.
+    This function now expects a list of already loaded Document objects.
+    """
+    if not documents:
+        logger.warning("No documents provided to load_and_split_text_document for splitting. Returning empty list.")
+        return []
+
+    logger.info(
+        f"Starting to split {len(documents)} loaded document sections with chunk_size={chunk_size} "
+        f"and chunk_overlap={chunk_overlap}."
+    )
+    try:
 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         chunks = text_splitter.split_documents(documents)
         cleaned_chunks = filter_complex_metadata(chunks)
 
         if not cleaned_chunks:
-            logger.warning(f"Splitting resulted in zero valid chunks for {file_path}.")
+            logger.warning(f"Splitting {len(documents)} documents resulted in zero valid chunks after cleaning.")
             return []
         logger.info(f"Split into {len(cleaned_chunks)} chunks.")
         return cleaned_chunks
 
-    except FileNotFoundError:
-        logger.error(f"File not found: {file_path}")
-        return None
     except Exception as e:
-        logger.error(f"Error loading/splitting document {file_path}: {e}", exc_info=True)
+        logger.error(f"Error during document splitting/cleaning: {e}", exc_info=True)
         return None
 
 def generate_text_embeddings_parallel(chunks: List[Document], embed_func: OllamaEmbeddings) -> List[Tuple[int, List[float]]]:
@@ -622,10 +678,10 @@ def summarize_transcript(transcript: str, max_chunk_chars: int = 2000, summary_m
 
 
 # --- Document Processing (Modified for API context) ---
-def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[VectorStoreRetriever], str]:
+def _process_document_internal(file_path: str) -> Tuple[Optional[str], str]:
     """
     Internal logic for document processing.
-    Returns: (processing_mode, retriever_object | None, status_message)
+    Returns: (processing_mode | None, status_message)
     """
     global processed_files, current_embedding_model, current_querying_model
 
@@ -634,9 +690,7 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
     start_time = time.time()
 
     processing_mode: Optional[str] = None
-    retriever: Optional[VectorStoreRetriever] = None
     status_message = f"Processing '{file_name}'...\n"
-    already_processed: bool = False
     processed_item_count = 0
 
     # Use a temporary directory for processing that cleans up
@@ -645,33 +699,41 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
     logger.info(f"Using temp directory for processing: {temp_dir_path}")
 
     try:
+        # Check if this specific file_path has already been processed in the current session
+        if file_path in processed_files:
+            logger.info(f"File '{file_name}' (path: {file_path}) already processed in this session. Skipping re-processing.")
+            existing_state = processed_files[file_path]
+            return existing_state['processing_mode'], f"File '{file_name}' already processed in this session."
+
         collection: Collection = _get_chroma_collection()
 
-        # Check if the document has already been processed
-        existing_docs: Dict[str, Any] = collection.get(where={"source": file_name})
-        if existing_docs and existing_docs.get("ids"):
-            already_processed = True
-            processing_mode = "already_processed"
-            status_message = f"Document '{file_name}' has already been processed.\n"
-            logger.info(f"Document '{file_name}' already processed. Skipping.")
-            return processing_mode, None, status_message
+        # Check if the document's content (based on file_name as source) is already in ChromaDB
+        # from a previous session.
+        existing_docs_in_db: Dict[str, Any] = collection.get(where={"source": file_name}, limit=1)
+        if existing_docs_in_db and existing_docs_in_db.get("ids"):
+            logger.info(f"Content from '{file_name}' found in ChromaDB (possibly from a previous session). Will not re-embed.")
+            determined_mode = None
+            if is_image_file(file_path):
+                determined_mode = 'image'
+            elif file_path.lower().endswith(".pdf"):
+                determined_mode = 'pdf'
+            elif file_path.lower().endswith((".txt", ".docx")):
+                determined_mode = 'text'
 
-        current_count = collection.count()
-        if current_count > 0:
-            logger.warning(f"Clearing existing collection '{COLLECTION_NAME}' ({current_count} items).")
-            client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-            try:
-                client.delete_collection(name=COLLECTION_NAME)
-                collection = client.get_or_create_collection(name=COLLECTION_NAME)
-                logger.info(f"Collection '{COLLECTION_NAME}' cleared.")
-            except Exception as del_err:
-                logger.error(f"Failed to delete collection '{COLLECTION_NAME}': {del_err}. Proceeding might add to existing data.", exc_info=True)
-                collection = client.get_or_create_collection(name=COLLECTION_NAME) # Re-get
-        else:
-            logger.info(f"Collection '{COLLECTION_NAME}' is empty.")
+            if determined_mode:
+                status_msg = f"Content from '{file_name}' is already in the database and will be available for queries."
+                # This file will be added to `processed_files` by the main_loop.
+                return determined_mode, status_msg
+            else:
+                # Should not happen if file_path is valid and supported
+                logger.warning(f"Could not determine mode for existing file {file_name} based on its extension, proceeding with full process attempt.")
+                # Fall through to normal processing. If IDs are truly unique, it might add duplicates.
+                # Or, if source is the key, it might update. Chroma's `add` with same IDs updates.
+                # Here, we generate new UUIDs, so it would add new entries if we proceed.
+                # For now, this path means we re-process if mode determination fails.
 
         # Initialize text embedder with current model
-        text_embed_func: Optional[OllamaEmbeddings] = None
+        text_embed_func: OllamaEmbeddings
         try:
             text_embed_func = OllamaEmbeddings(model=current_embedding_model)
             text_embed_func.embed_query("test") # Test connection
@@ -766,9 +828,14 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
 
             # --- PDF Text Handling ---
             status_message += "Processing text...\n"
-            text_chunks = load_and_split_text_document(file_path, CHUNK_SIZE, CHUNK_OVERLAP)
-            if text_chunks:
-                status_message += f"Extracted {len(text_chunks)} text chunks. Embedding...\n"
+            loaded_documents = _load_text_content_from_file(file_path)
+            if loaded_documents:
+                status_message += f"Loaded {len(loaded_documents)} sections from PDF. Splitting...\n"
+                text_chunks = load_and_split_text_document(loaded_documents, CHUNK_SIZE, CHUNK_OVERLAP)
+                if not text_chunks:
+                    status_message += "Warning: Failed to split PDF text content or no content after splitting.\n"
+                else:
+                    status_message += f"Split PDF into {len(text_chunks)} text chunks. Embedding...\n"
                 embedding_results = generate_text_embeddings_parallel(text_chunks, text_embed_func)
                 if embedding_results:
                     ids_to_add, embeddings_to_add, metadatas_to_add, documents_to_add = [], [], [], []
@@ -799,43 +866,6 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
                         processed_item_count += pdf_text_chunks_processed_count
                         status_message += f"Stored {pdf_text_chunks_processed_count} text chunk embeddings.\n"
                         logger.info(f"Stored {pdf_text_chunks_processed_count} PDF text embeddings.")
-
-                        # Create Langchain retriever
-                        try:
-                            # Initialize ChromaDB with the embedding function first
-                            client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-                            
-                            # Create or get collection without embedding_function parameter
-                            collection = client.get_or_create_collection(name=COLLECTION_NAME)
-                            
-                            # Create retriever directly with the embedding function
-                            retriever = Chroma(
-                                client=client,
-                                collection_name=collection.name,
-                                embedding_function=text_embed_func
-                            ).as_retriever(
-                                search_type="similarity",
-                                search_kwargs={"k": TEXT_RETRIEVER_K}
-                            )
-                            logger.info(f"Langchain text retriever created for PDF (k={TEXT_RETRIEVER_K}).")
-                        except Exception as chroma_err:
-                            logger.error(f"ChromaDB initialization error: {chroma_err}")
-                            # Fallback initialization if needed
-                            try:
-                                # Try alternate initialization method
-                                collection = Chroma(
-                                    persist_directory=CHROMA_PERSIST_DIR,
-                                    collection_name=COLLECTION_NAME,
-                                    embedding_function=text_embed_func
-                                )
-                                retriever = collection.as_retriever(
-                                    search_type="similarity", 
-                                    search_kwargs={"k": TEXT_RETRIEVER_K}
-                                )
-                                logger.info("Langchain text retriever created with fallback method.")
-                            except Exception as fallback_err:
-                                logger.error(f"Fallback retriever creation also failed: {fallback_err}", exc_info=True)
-                                status_message += "Warning: Failed to create text retriever interface.\n"
                     else: status_message += "Warning: No valid text embeddings generated for PDF.\n"
                 else: status_message += "Warning: Failed to generate embeddings for PDF text chunks.\n"
             else: status_message += "No text content found/extracted from PDF.\n"
@@ -844,9 +874,14 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
         elif file_path.lower().endswith((".txt", ".docx")):
             processing_mode = 'text'
             status_message += f"Detected {processing_mode.upper()} file. Loading, splitting, embedding...\n"
-            text_chunks = load_and_split_text_document(file_path, CHUNK_SIZE, CHUNK_OVERLAP)
-            if text_chunks:
-                status_message += f"Extracted {len(text_chunks)} text chunks. Embedding...\n"
+            loaded_documents = _load_text_content_from_file(file_path)
+            if loaded_documents:
+                status_message += f"Loaded {len(loaded_documents)} sections from {processing_mode.upper()} file. Splitting...\n"
+                text_chunks = load_and_split_text_document(loaded_documents, CHUNK_SIZE, CHUNK_OVERLAP)
+                if not text_chunks:
+                    status_message += f"Warning: Failed to split {processing_mode.upper()} content or no content after splitting.\n"
+                else:
+                    status_message += f"Split {processing_mode.upper()} file into {len(text_chunks)} text chunks. Embedding...\n"
                 embedding_results = generate_text_embeddings_parallel(text_chunks, text_embed_func)
                 if embedding_results:
                     ids_to_add, embeddings_to_add, metadatas_to_add, documents_to_add = [], [], [], []
@@ -870,21 +905,9 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
                         processed_item_count += text_items_processed
                         status_message += f"Stored {text_items_processed} text chunk embeddings.\n"
                         logger.info(f"Stored {text_items_processed} {processing_mode.upper()} text embeddings.")
-
-                        # Create Langchain retriever
-                        try:
-                             # Remove embedding_function from constructor; it's inferred or handled internally
-                             lc_chroma = Chroma(client=collection._client, collection_name=collection.name, persist_directory=CHROMA_PERSIST_DIR)
-                             retriever = lc_chroma.as_retriever(search_kwargs={"k": TEXT_RETRIEVER_K})
-                             logger.info(f"Langchain text retriever created for {processing_mode.upper()} (k={TEXT_RETRIEVER_K}).")
-                        except Exception as lc_err:
-                             logger.error(f"Failed to create Langchain retriever for {processing_mode.upper()} text: {lc_err}", exc_info=True)
-                             status_message += "Warning: Failed to create text retriever interface.\n"
-                        # Add log to confirm retriever state after creation attempt
-                        logger.info(f"Retriever object after creation attempt: {'Exists' if retriever else 'None'}")
                     else: status_message += "Warning: No valid text embeddings generated.\n"
                 else: status_message += "Error: Failed to generate embeddings.\n"; processing_mode = None
-            else: status_message += "No text content found/extracted from file.\n"
+            else: status_message += f"No text content loaded from {processing_mode.upper()} file.\n"
 
         else:
             status_message += f"Error: Unsupported file type '{os.path.splitext(file_name)[1]}'.\n"
@@ -896,36 +919,21 @@ def _process_document_internal(file_path: str) -> Tuple[Optional[str], Optional[
             processing_time = end_time - start_time
             status_message += f"Processing complete ({processed_item_count} items stored). Took {processing_time:.2f} seconds.\n"
             status_message += f"Ready to answer questions about '{file_name}'!"
-            logger.info(f"--- Processing Complete for: {file_name} (Mode: {processing_mode}) ---")
-            # Update global state
-            current_processing_mode = processing_mode
-            current_retriever = retriever
+            logger.info(f"--- Processing Complete for: {file_name} (Mode: {processing_mode}, Items: {processed_item_count}) ---")
         else:
             if not status_message.endswith("failed.\n"): status_message += "Processing failed.\n"
             logger.error(f"--- Processing Failed for: {file_name} ---")
-            # Reset global state on failure
-            current_processing_mode = None
-            current_retriever = None
-            current_file_path = None
-            current_file_name = None
 
     except Exception as e:
         logger.critical(f"Unhandled error during document processing for {file_name}: {e}", exc_info=True)
         status_message += f"Critical Error: {type(e).__name__}. Check logs.\nProcessing failed."
         processing_mode = None
-        retriever = None
-        # Reset global state on critical failure
-        current_processing_mode = None
-        current_retriever = None
-        current_file_path = None
-        current_file_name = None
     finally:
         # IMPORTANT: Clean up the temporary directory for this processing run
         processing_temp_dir.cleanup()
         logger.info(f"Cleaned up temp directory: {temp_dir_path}")
 
-
-    return processing_mode, retriever, status_message
+    return processing_mode, status_message
 
 # --- Query Processing (Modified for API context) ---
 def _process_response_internal(query: str) -> str:
@@ -987,8 +995,8 @@ def _process_response_internal(query: str) -> str:
         if mode in ['image', 'pdf']:
             try:
                 # Search for relevant image descriptions
-                text_embed_func = OllamaEmbeddings(model=current_embedding_model)
-                query_embedding = text_embed_func.embed_query(query)
+                image_query_embed_func = OllamaEmbeddings(model=current_image_embedding_model) # Use image model
+                query_embedding = image_query_embed_func.embed_query(query)
                 collection = _get_chroma_collection()
                 results = collection.query(
                     query_embeddings=[query_embedding],
@@ -1225,12 +1233,11 @@ def main_loop():
 
                     # Process the document
                     try:
-                        processing_mode, retriever, status = _process_document_internal(file_path)
+                        processing_mode, status = _process_document_internal(file_path)
                         if processing_mode is not None:
                             # Store the state for this file
                             processed_files[file_path] = {
                                 'processing_mode': processing_mode,
-                                'retriever': retriever,
                                 'file_name': os.path.basename(file_path)
                             }
                             send_response({

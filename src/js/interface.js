@@ -19,61 +19,89 @@ let currentQueryingModel = '';
 
 // Initialize model selectors
 async function initializeModels() {
+    let initializationMessages = [];
+    let allSuccess = true;
+
     try {
         console.log('Initializing model selectors...');
-        
-        // Clear existing options
-        embeddingModel.innerHTML = '';
-        imageEmbeddingModel.innerHTML = '';
-        queryingModel.innerHTML = '';
 
         // Define model categories and their corresponding select elements
+        // Ensure these category names match the keys in your models.json
         const modelSelectors = [
-            { category: 'text_embedding_models', select: embeddingModel, currentVar: 'currentEmbeddingModel' },
-            { category: 'image_embedding_models', select: imageEmbeddingModel, currentVar: 'currentImageEmbeddingModel' },
-            { category: 'querying_models', select: queryingModel, currentVar: 'currentQueryingModel' }
+            { selectElement: embeddingModel, category: 'text_embedding_models', currentVarName: 'currentEmbeddingModel' },
+            { selectElement: imageEmbeddingModel, category: 'image_embedding_models', currentVarName: 'currentImageEmbeddingModel' },
+            { selectElement: queryingModel, category: 'querying_models', currentVarName: 'currentQueryingModel' }
         ];
 
-        // Populate each model selector
-        for (const { category, select, currentVar } of modelSelectors) {
+        for (const config of modelSelectors) {
+            config.selectElement.innerHTML = ''; // Clear existing options
+
             try {
-                console.log(`Fetching models for category: ${category}`);
-                const result = await window.electronAPI.getModelsByCategory(category);
-                
+                console.log(`Fetching models for category: ${config.category}`);
+                const result = await window.electronAPI.getModelsByCategory(config.category);
+
                 if (result && result.type === 'models_list' && Array.isArray(result.models)) {
-                    console.log(`Got models for ${category}:`, result.models);
-                    
-                    // Add options to select element
+                    console.log(`Got models for ${config.category}:`, result.models);
+
+                    if (result.models.length === 0) {
+                        const msg = `No models available for ${config.category}.`;
+                        console.warn(msg);
+                        initializationMessages.push(msg);
+                        const option = document.createElement('option');
+                        option.value = "";
+                        option.textContent = `No ${config.category} models`;
+                        option.disabled = true;
+                        config.selectElement.appendChild(option);
+                        allSuccess = false;
+                        continue;
+                    }
+
                     result.models.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model;
                         option.textContent = model;
-                        select.appendChild(option);
+                        config.selectElement.appendChild(option);
                     });
 
                     // Set initial selection if we have models
                     if (result.models.length > 0) {
                         const defaultModel = result.models[0];
-                        select.value = defaultModel;
-                        window[currentVar] = defaultModel;
+                        config.selectElement.value = defaultModel;
+                        window[config.currentVarName] = defaultModel; // Update global state
+                        console.log(`Set default for ${config.category} to ${defaultModel}`);
                     }
                 } else {
-                    console.error(`Failed to get models for ${category}:`, result);
-                    statusOutput.value = `Error loading ${category}. Check the backend connection.`;
+                    const errorMsg = result?.message || `Failed to get models for ${config.category}.`;
+                    console.error(errorMsg, result);
+                    initializationMessages.push(`Error loading ${config.category} models: ${errorMsg}`);
+                    const option = document.createElement('option');
+                    option.value = "";
+                    option.textContent = `Error loading ${config.category} models`;
+                    option.disabled = true;
+                    config.selectElement.appendChild(option);
+                    allSuccess = false;
                 }
             } catch (error) {
-                console.error(`Error loading ${category}:`, error);
-                statusOutput.value = `Error loading ${category}. ${error.message}`;
+                console.error(`Error loading models for category ${config.category}:`, error);
+                initializationMessages.push(`Error initializing ${config.category} models: ${error.message}`);
+                const option = document.createElement('option');
+                option.value = "";
+                option.textContent = `Error initializing ${config.category} models`;
+                option.disabled = true;
+                config.selectElement.appendChild(option);
+                allSuccess = false;
             }
         }
+        if (initializationMessages.length > 0) {
+            statusOutput.value = initializationMessages.join('\n');
+        } else if (allSuccess) {
+            statusOutput.value = 'All models initialized successfully.';
+        }
     } catch (error) {
-        console.error('Error initializing models:', error);
+        console.error('Error loading models:', error);
         statusOutput.value = 'Error initializing models. Check connection to backend.';
     }
 }
-
-// Call initialization on page load
-initializeModels();
 
 // Handle embedding model selection change
 embeddingModel.addEventListener('change', async () => {
@@ -131,30 +159,30 @@ imageEmbeddingModel.addEventListener('change', async () => {
 
 // Handle querying model selection change
 queryingModel.addEventListener('change', async () => {
-    const selectedModel = queryingModel.value;
-    if (selectedModel && selectedModel !== currentQueryingModel) {
-        try {
-            queryingModel.disabled = true;
-            statusOutput.value = `Setting querying model to ${selectedModel}...`;
-            
-            const result = await window.electronAPI.setQueryingModel(selectedModel);
-            console.log('Set querying model result:', result);
-            
-            if (result && result.type === 'model_set') {
-                currentQueryingModel = selectedModel;
-                statusOutput.value = result.message;
-            } else {
-                throw new Error(result.message || 'Failed to set querying model');
+            const selectedModel = queryingModel.value;
+            if (selectedModel && selectedModel !== currentQueryingModel) {
+                try {
+                    queryingModel.disabled = true;
+                    statusOutput.value = `Setting querying model to ${selectedModel}...`;
+                    
+                    const result = await window.electronAPI.setQueryingModel(selectedModel);
+                    console.log('Set querying model result:', result);
+                    
+                    if (result && result.type === 'model_set') {
+                        currentQueryingModel = selectedModel;
+                        statusOutput.value = result.message;
+                    } else {
+                        throw new Error(result.message || 'Failed to set querying model');
+                    }
+                } catch (error) {
+                    console.error('Error setting querying model:', error);
+                    statusOutput.value = `Error setting querying model: ${error.message}`;
+                    queryingModel.value = currentQueryingModel;
+                } finally {
+                    queryingModel.disabled = false;
+                }
             }
-        } catch (error) {
-            console.error('Error setting querying model:', error);
-            statusOutput.value = `Error setting querying model: ${error.message}`;
-            queryingModel.value = currentQueryingModel;
-        } finally {
-            queryingModel.disabled = false;
-        }
-    }
-});
+        });
 
 let processedFiles = [];
 
@@ -188,18 +216,29 @@ processButton.addEventListener('click', async () => {
     processButton.disabled = true;
     clearButton.disabled = true;
     processedFiles = []; // Reset processed files list
+    let overallSuccess = true; // Flag to track overall success
 
     try {
         for (const file of currentFiles) {
             statusOutput.value = `Processing '${file.name}'...`;
-            const result = await window.electronAPI.processFile(file.path);
-            console.log("Process Result from Main:", result);
-            
-            if (result.type === 'process_complete') {
-                processedFiles.push(file.name);
-                statusOutput.value = result.status;
-            } else {
-                statusOutput.value += `\nError processing ${file.name}: ${result.message || 'Unknown error'}`;
+            try {
+                // Show processing status for each file
+                statusOutput.value += `\nReading file: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                
+                const result = await window.electronAPI.processFile(file.path);
+                console.log("Process Result from Main:", result);
+
+                if (result.type === 'process_complete') {
+                    processedFiles.push(file.name);
+                    statusOutput.value += `\nSuccessfully processed: ${file.name}`;
+                } else {
+                    statusOutput.value += `\nError processing ${file.name}: ${result.message || 'Unknown error'}`;
+                    overallSuccess = false;
+                }
+            } catch (fileError) {
+                statusOutput.value += `\nError processing ${file.name}: ${fileError.message}`;
+                overallSuccess = false;
+                continue; // Skip to next file on error
             }
         }
 
@@ -210,6 +249,12 @@ processButton.addEventListener('click', async () => {
             clearButton.disabled = false;
             queryInput.placeholder = `Ask about the processed files or type 'summarize'...`;
             statusOutput.value += `\n\nReady to answer questions about: ${processedFiles.join(', ')}`;
+            
+            if (!overallSuccess) {
+                statusOutput.value += '\n\nNote: Some files failed to process. You can query about the successfully processed ones.';
+            }
+        } else {
+            statusOutput.value += '\n\nNo files were successfully processed.';
         }
     } catch (error) {
         console.error('Error processing files:', error);
@@ -233,7 +278,7 @@ clearButton.addEventListener('click', async () => {
         processedFiles = [];
         clearButton.disabled = true;
     } catch (error) {
-        console.error('Error clearing state:', error);
+       console.error('Error clearing state:', error);
         statusOutput.value = `Error: Could not clear state.\nDetails: ${error.message}`;
     }
 });
@@ -277,7 +322,7 @@ async function handleQuerySubmit() {
         answerOutput.value = `Error: Could not connect to backend or query failed.\nDetails: ${error.message}`;
     } finally {
         submitButton.disabled = false;
-        queryInput.disabled = false;
+        queryInput.disabled = false; // Allow further queries
     }
 }
 
