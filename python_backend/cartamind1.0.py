@@ -1,5 +1,5 @@
 """
-Cognidoc - Document Processing and Question Answering System
+CartaMind - Document Processing and Question Answering System
 ==========================================================
 
 This module provides functionality for processing various types of documents (PDF, TXT, DOCX, images)
@@ -25,12 +25,12 @@ import uuid
 import time
 import logging
 import tempfile
+from typing import List, Dict, Optional, Any, Tuple, Union
+from concurrent.futures import ThreadPoolExecutor
+
 import chromadb
 import fitz  # PyMuPDF
 import ollama
-
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Optional, Any, Tuple, Union
 from chromadb import Collection
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
@@ -40,17 +40,34 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStoreRetriever
 
+def get_user_config_dir() -> str:
+    """Get the user's configuration directory for CartaMind."""
+    if sys.platform == 'win32':
+        documents_dir = os.path.join(os.path.expanduser('~'), 'Documents')
+    elif sys.platform == 'darwin':  # macOS
+        documents_dir = os.path.join(os.path.expanduser('~'), 'Documents')
+    else:  # Linux and other Unix-like
+        documents_dir = os.path.join(os.path.expanduser('~'), 'Documents')
+    
+    config_dir = os.path.join(documents_dir, 'CartaMind')
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
+
 # --- Configuration ---
 # Ensure paths are relative to this script's location or use absolute paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = get_user_config_dir()
+MODELS_JSON_PATH = os.path.join(CONFIG_DIR, 'models.json')
 CHROMA_PERSIST_DIR = os.path.join(SCRIPT_DIR, "chroma_db_electron")
-COLLECTION_NAME = "user_doc_collection_electron_v1"
-
-# Model Configuration - Initialize with None, will be set from models.json
-TEXT_EMBEDDING_MODEL = None  # Will be set from models.json text_embedding_models
-IMAGE_EMBEDDING_MODEL = None  # Will be set from models.json image_embedding_models
-IMAGE_QUERY_MODEL = None     # Will be set from models.json querying_models
-LLM_MODEL = None            # Will be set from models.json querying_models
+COLLECTION_NAME = "cartamind_collection_v1"
 
 # Processing Configuration
 CHUNK_SIZE = 500
@@ -58,10 +75,31 @@ CHUNK_OVERLAP = 100
 TEXT_RETRIEVER_K = 50
 IMAGE_RETRIEVER_K = 1
 
+# Model Configuration - Initialize with None, will be set from models.json
+TEXT_EMBEDDING_MODEL = None
+IMAGE_EMBEDDING_MODEL = None
+IMAGE_QUERY_MODEL = None
+LLM_MODEL = None
+
 # Enhanced error handling for models.json
 try:
-    with open(os.path.join(SCRIPT_DIR, "models.json"), 'r') as f:
-        models_data = json.load(f)
+    if not os.path.exists(MODELS_JSON_PATH):
+        default_models = {
+            "model_categories": {
+                "querying_models": ["llama2:13b"],
+                "image_embedding_models": ["llava:13b"],
+                "text_embedding_models": ["all-minilm:latest"]
+            }
+        }
+        os.makedirs(os.path.dirname(MODELS_JSON_PATH), exist_ok=True)
+        with open(MODELS_JSON_PATH, 'w') as f:
+            json.dump(default_models, f, indent=4)
+        logger.info(f"Created default models.json at {MODELS_JSON_PATH}")
+        models_data = default_models
+    else:
+        with open(MODELS_JSON_PATH, 'r') as f:
+            models_data = json.load(f)
+            
     categories = models_data.get('model_categories', {})
 
     # Validate model categories
@@ -71,20 +109,16 @@ try:
     # Set default models from the first available model in each category
     TEXT_EMBEDDING_MODEL = categories.get('text_embedding_models', [])[0] if categories.get('text_embedding_models') else "all-minilm:latest"
     IMAGE_EMBEDDING_MODEL = categories.get('image_embedding_models', [])[0] if categories.get('image_embedding_models') else "llava:13b"
-    IMAGE_QUERY_MODEL = categories.get('querying_models', [])[0] if categories.get('querying_models') else "llava-llama3:8b-v1.1-q4_0"
-    LLM_MODEL = categories.get('querying_models', [])[0] if categories.get('querying_models') else "llava-llama3:8b-v1.1-q4_0"
-except FileNotFoundError:
-    logger.error("models.json not found. Using hardcoded defaults.")
+    IMAGE_QUERY_MODEL = categories.get('querying_models', [])[0] if categories.get('querying_models') else "llama2:13b"
+    LLM_MODEL = IMAGE_QUERY_MODEL  # Use the same model for text queries
+    
+except Exception as e:
+    logger.error(f"Error loading models.json: {e}")
+    # Set fallback defaults
     TEXT_EMBEDDING_MODEL = "all-minilm:latest"
     IMAGE_EMBEDDING_MODEL = "llava:13b"
-    IMAGE_QUERY_MODEL = "llava-llama3:8b-v1.1-q4_0"
-    LLM_MODEL = "llava-llama3:8b-v1.1-q4_0"
-except (json.JSONDecodeError, ValueError) as e:
-    logger.error(f"Error parsing models.json: {e}. Using hardcoded defaults.")
-    TEXT_EMBEDDING_MODEL = "all-minilm:latest"
-    IMAGE_EMBEDDING_MODEL = "llava:13b"
-    IMAGE_QUERY_MODEL = "llava-llama3:8b-v1.1-q4_0"
-    LLM_MODEL = "llava-llama3:8b-v1.1-q4_0"
+    IMAGE_QUERY_MODEL = "llama2:13b"
+    LLM_MODEL = IMAGE_QUERY_MODEL
 
 # --- Global State ---
 current_embedding_model: str = TEXT_EMBEDDING_MODEL
@@ -103,14 +137,6 @@ processed_files: Dict[str, Dict[str, Any]] = {}  # file_path -> state dict
 # - file_name: str
 # Ensure the Chroma directory exists
 os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
-)
-logger = logging.getLogger(__name__)
 
 # --- Helper Functions ---
 def is_image_file(file_path: Optional[str]) -> bool:
@@ -1162,3 +1188,74 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+
+def validate_models_json() -> None:
+    """Validate models.json exists and has correct structure, create with defaults if missing."""
+    default_models = {
+        "model_categories": {
+            "querying_models": [
+                "llama2:13b",
+                "llama3.1:8b",
+                "deepseek-r1:7b"
+            ],
+            "image_embedding_models": [
+                "llava:13b",
+                "llava-llama3:8b-v1.1-q4_0"
+            ],
+            "text_embedding_models": [
+                "all-minilm:latest",
+                "nomic-embed-text:latest"
+            ]
+        }
+    }
+
+    try:
+        if not os.path.exists(MODELS_JSON_PATH):
+            logger.info(f"models.json not found at {MODELS_JSON_PATH}, creating with defaults...")
+            os.makedirs(os.path.dirname(MODELS_JSON_PATH), exist_ok=True)
+            with open(MODELS_JSON_PATH, 'w') as f:
+                json.dump(default_models, f, indent=4)
+            logger.info("Created default models.json")
+            return
+
+        # Validate existing file
+        with open(MODELS_JSON_PATH, 'r') as f:
+            models_data = json.load(f)
+        
+        categories = models_data.get('model_categories', {})
+        required_categories = ['querying_models', 'image_embedding_models', 'text_embedding_models']
+        
+        # Check if all required categories exist and are lists
+        missing_categories = []
+        invalid_categories = []
+        for category in required_categories:
+            if category not in categories:
+                missing_categories.append(category)
+            elif not isinstance(categories[category], list):
+                invalid_categories.append(category)
+        
+        if missing_categories or invalid_categories:
+            logger.warning(f"Invalid models.json structure detected")
+            if missing_categories:
+                logger.warning(f"Missing categories: {missing_categories}")
+            if invalid_categories:
+                logger.warning(f"Invalid category types: {invalid_categories}")
+            
+            # Merge with defaults for missing/invalid categories
+            for category in missing_categories + invalid_categories:
+                categories[category] = default_models['model_categories'][category]
+            
+            # Save corrected file
+            models_data['model_categories'] = categories
+            with open(MODELS_JSON_PATH, 'w') as f:
+                json.dump(models_data, f, indent=4)
+            logger.info("Fixed and saved models.json with correct structure")
+            
+    except Exception as e:
+        logger.error(f"Error handling models.json: {e}")
+        logger.info("Creating new models.json with defaults")
+        with open(MODELS_JSON_PATH, 'w') as f:
+            json.dump(default_models, f, indent=4)
+
+# Call validation on startup
+validate_models_json()

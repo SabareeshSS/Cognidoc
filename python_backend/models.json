@@ -1,22 +1,18 @@
 {
     "model_categories": {
-        "querying_models": [
-            "granite3.3:8b",
+        "querying_models": [            
             "llama3.1:8b",
+            "granite3.3:8b",
             "deepseek-r1:7b",
-            "llava:13b",
-            "llava-llama3:8b-v1.1-q4_0"
+            "llava:13b"
         ],
         "image_embedding_models": [
-            "granite3.3:8b",
-            "llava:13b",
+            "x/llama3.2-vision:latest",
             "llava-llama3:8b-v1.1-q4_0"
         ],
         "text_embedding_models": [
             "all-minilm:latest",
-            "nomic-embed-text:latest",
-            "granite3.3:8b",
-            "llama3.1:8b"
+            "nomic-embed-text:latest"
         ]
     }
 }

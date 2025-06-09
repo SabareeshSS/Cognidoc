@@ -15,6 +15,7 @@ try {
         onPythonLog: (callback) => ipcRenderer.on('python-log', (_event, value) => callback(value)),
         onPythonError: (callback) => ipcRenderer.on('python-error', (_event, value) => callback(value)),
         onPythonStatusUpdate: (callback) => ipcRenderer.on('python-status-update', (_event, value) => callback(value)),
+        onNotification: (callback) => ipcRenderer.on('show-notification', (_event, data) => callback(data)),
     });
     console.log('electronAPI exposed successfully via preload.'); // Add log
 } catch (error) {

@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const { v4: uuidv4 } = require('uuid'); // For request IDs
+const fs = require('fs'); // <-- Add this
 
 let mainWindow;
 let pythonProcess = null;
@@ -30,27 +31,77 @@ function createWindow() {
 } // <-- End of createWindow function
 
 function startPythonBackend() {
-    if (pythonProcess) {
-        console.log('Python backend already running');
-        return;
-    }
+    try {
+        if (pythonProcess) {
+            console.log('Python backend already running');
+            return;
+        }
 
-    const pythonExecutable = process.platform === 'win32' ? 'python' : 'python3';
-    const scriptPath = path.join(__dirname, 'python_backend/cognidoc1.0.py');
+        const pythonExecutable = process.platform === 'win32' ? 'python' : 'python3';
+        const scriptPath = path.join(__dirname, 'python_backend/cartamind1.0.py');
     
-    // Ensure the script exists
-    if (!require('fs').existsSync(scriptPath)) {
-        console.error(`Python script not found at: ${scriptPath}`);
-        dialog.showErrorBox('Backend Error', `Python script not found:\n${scriptPath}\nPlease ensure the backend script exists.`);
-        app.quit();
-        return;
-    }
+        // Ensure the script exists
+        if (!fs.existsSync(scriptPath)) {
+            const error = `Python script not found at: ${scriptPath}`;
+            console.error(error);
+            dialog.showErrorBox('Backend Error', `Python script not found:\n${scriptPath}\nPlease ensure the backend script exists.`);
+            app.quit();
+            throw new Error(error);
+        }
 
-    console.log(`Starting Python backend: ${pythonExecutable} ${scriptPath}`);
-    pythonProcess = spawn(pythonExecutable, [scriptPath], {
-        // Ensure we can communicate with the process
-        stdio: ['pipe', 'pipe', 'pipe']
-    });
+        console.log(`Starting Python backend: ${pythonExecutable} ${scriptPath}`);
+        pythonProcess = spawn(pythonExecutable, [scriptPath], {
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        // Handle Python process stdout
+        pythonProcess.stdout.on('data', (data) => {
+            try {
+                const lines = data.toString().trim().split('\n');
+                lines.forEach(line => {
+                    if (!line.trim()) return;
+                    
+                    const response = JSON.parse(line);
+                    console.log('Python response:', response);
+                    
+                    const requestId = response.request_id;
+                    if (requestId && pendingRequests.has(requestId)) {
+                        const { resolve } = pendingRequests.get(requestId);
+                        pendingRequests.delete(requestId);
+                        resolve(response);
+                    }
+                });
+            } catch (e) {
+                console.error('Error processing Python output:', e);
+            }
+        });
+
+        // Handle Python process stderr
+        pythonProcess.stderr.on('data', (data) => {
+            console.error(`Python stderr: ${data}`);
+        });
+
+        // Handle Python process errors
+        pythonProcess.on('error', (err) => {
+            console.error('Failed to start Python process:', err);
+            dialog.showErrorBox('Backend Error', 
+                `Failed to start Python backend:\n${err.message}\n` +
+                'Please ensure Python is installed and in your PATH.');
+        });
+
+        // Handle Python process exit
+        pythonProcess.on('close', (code) => {
+            console.log(`Python backend exited with code ${code}`);
+            pythonProcess = null;
+        });
+
+    } catch (error) {
+        console.error('Error in startPythonBackend:', error);
+        dialog.showErrorBox('Backend Error', 
+            `Failed to start Python backend:\n${error.message}\n` +
+            'Please ensure Python is installed and the script exists.');
+        throw error;
+    }
 
     // Handle Python process stdout
     pythonProcess.stdout.on('data', (data) => {
@@ -65,15 +116,27 @@ function startPythonBackend() {
                 const requestId = response.request_id;
                 if (requestId && pendingRequests.has(requestId)) {
                     const { resolve } = pendingRequests.get(requestId);
+                    console.log('Resolving pending request:', requestId, response);
                     resolve(response);
                     pendingRequests.delete(requestId);
+                } else if (response.type === 'model_set') {
+                    // Handle model change confirmation without request ID
+                    console.log('Broadcasting model change:', response);
+                    if (mainWindow) {
+                        mainWindow.webContents.send('model-changed', response);
+                    }
                 } else if (mainWindow) {
-                    // For messages without request ID or status updates
+                    // For other messages without request ID or status updates
+                    console.log('Broadcasting message:', response);
                     mainWindow.webContents.send('python-message', response);
                 }
             } catch (e) {
                 console.error('Error parsing Python output:', e);
                 console.log('Raw output:', line);
+                // Broadcast parse error to renderer
+                if (mainWindow) {
+                    mainWindow.webContents.send('python-error', `Failed to parse Python output: ${e.message}`);
+                }
             }
         });
     });
@@ -89,6 +152,14 @@ function startPythonBackend() {
     // Handle Python process errors
     pythonProcess.on('error', (err) => {
         console.error('Failed to start Python process:', err);
+        if (mainWindow) {
+            mainWindow.webContents.send('python-error', `Failed to start Python backend: ${err.message}`);
+        }
+        // Clean up any pending requests
+        pendingRequests.forEach(({ reject }) => {
+            reject(new Error('Python backend failed to start'));
+        });
+        pendingRequests.clear();
         dialog.showErrorBox('Backend Error', 
             `Failed to start Python backend:\n${err.message}\n` +
             'Please ensure Python is installed and in your PATH.');
@@ -116,6 +187,7 @@ function startPythonBackend() {
 
 app.whenReady().then(() => {
     console.log(">>> App is ready. Calling startPythonBackend and createWindow..."); // <-- Add this
+    checkModelsConfig();  // Add this line
     startPythonBackend(); // Call startPythonBackend here
     createWindow(); // Call createWindow here
 
@@ -125,6 +197,32 @@ app.whenReady().then(() => {
         }
     });
 });
+
+// Helper function to check and initialize models.json
+async function checkModelsConfig() {
+    const documentsPath = app.getPath('documents');
+    const configDir = path.join(documentsPath, 'CartaMind');
+    const modelsPath = path.join(configDir, 'models.json');
+
+    if (!fs.existsSync(modelsPath)) {
+        // Create CartaMind directory in Documents if it doesn't exist
+        if (!fs.existsSync(configDir)) {
+            fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        // Copy default models.json if it doesn't exist in user's Documents
+        const sourceModelsPath = path.join(__dirname, 'python_backend', 'models.json');
+        if (fs.existsSync(sourceModelsPath)) {
+            fs.copyFileSync(sourceModelsPath, modelsPath);
+            if (mainWindow) {
+                mainWindow.webContents.send('show-notification', {
+                    title: 'Configuration Created',
+                    message: `Models configuration file created at:\n${modelsPath}\nYou can customize the available models by editing this file.`
+                });
+            }
+        }
+    }
+}
 
 function sendToPython(data) {
     return new Promise((resolve, reject) => {
@@ -151,7 +249,7 @@ ipcMain.handle('process-file', async (event, filePath) => {
         throw new Error('Python backend process is not running.');
     }
     const requestId = uuidv4();
-    const command = { command: 'process', file_path: filePath, request_id: requestId };
+    const command = { type: 'process', file_path: filePath, request_id: requestId };
 
     return new Promise((resolve, reject) => {
         pendingRequests.set(requestId, { resolve, reject });
@@ -162,7 +260,6 @@ ipcMain.handle('process-file', async (event, filePath) => {
              pendingRequests.delete(requestId);
              reject(e);
         }
-        // Add a timeout?
     });
 });
 
@@ -172,7 +269,7 @@ ipcMain.handle('submit-query', async (event, queryText) => {
         throw new Error('Python backend process is not running.');
     }
     const requestId = uuidv4();
-    const command = { command: 'query', query_text: queryText, request_id: requestId };
+    const command = { type: 'query', query_text: queryText, request_id: requestId };
     // Similar promise structure as 'process-file'
     return new Promise((resolve, reject) => {
         pendingRequests.set(requestId, { resolve, reject });
@@ -202,79 +299,79 @@ ipcMain.handle('get-models', async () => {
     }
 });
 
-// Handle model listing
+// Handle model-related IPC events
 ipcMain.handle('get-models-by-category', async (event, category) => {
+    console.log(`Handling get-models-by-category request for: ${category}`);
     try {
-        // Read models.json directly
-        const modelsPath = path.join(__dirname, 'python_backend', 'models.json');
-        const modelsData = JSON.parse(require('fs').readFileSync(modelsPath, 'utf8'));
-        const models = modelsData.model_categories[category] || [];
-        return { type: 'models_list', models };
+        const modelsPath = path.join(app.getPath('documents'), 'CartaMind', 'models.json');
+        console.log(`Reading models from: ${modelsPath}`);
+        
+        if (!fs.existsSync(modelsPath)) {
+            console.error('models.json not found');
+            return { type: 'error', message: 'models.json not found' };
+        }
+
+        const modelsData = JSON.parse(fs.readFileSync(modelsPath, 'utf8'));
+        const categoryModels = modelsData?.model_categories?.[category] || [];
+        
+        console.log(`Found ${categoryModels.length} models for category ${category}`);
+        return { 
+            type: 'models_list', 
+            models: categoryModels,
+            category: category
+        };
     } catch (error) {
         console.error('Error getting models by category:', error);
-        return { type: 'error', message: error.message };
-    }
-});
-
-// Handle embedding model setting
-ipcMain.handle('set-embedding-model', async (event, modelName) => {
-    if (!pythonProcess) {
-        throw new Error('Python backend process is not running.');
-    }
-    const requestId = uuidv4();
-    const command = { command: 'set_embedding_model', model_name: modelName, request_id: requestId };
-
-    return new Promise((resolve, reject) => {
-        pendingRequests.set(requestId, { resolve, reject });
-        try {
-            pythonProcess.stdin.write(JSON.stringify(command) + '\n');
-            console.log('Sent set-embedding-model request to Python:', command);
-        } catch (e) {
-            pendingRequests.delete(requestId);
-            reject(e);
-        }
-    });
-});
-
-// Handle set image embedding model request
-ipcMain.handle('set-image-embedding-model', async (event, modelName) => {
-    const requestId = uuidv4();
-    try {
-        const response = await sendToPython({
-            command: 'set_image_embedding_model',
-            model_name: modelName,
-            request_id: requestId
-        });
-        return response;
-    } catch (error) {
-        console.error('Error setting image embedding model:', error);
-        return {
-            type: 'error',
-            message: `Failed to set image embedding model: ${error.message}`,
-            request_id: requestId
+        return { 
+            type: 'error', 
+            message: `Failed to get models for ${category}: ${error.message}` 
         };
     }
 });
 
-// Handle querying model setting
-ipcMain.handle('set-querying-model', async (event, modelName) => {
-    if (!pythonProcess) {
-        throw new Error('Python backend process is not running.');
-    }
-    const requestId = uuidv4();
-    const command = { command: 'set_model', model_name: modelName, request_id: requestId };
-
-    return new Promise((resolve, reject) => {
-        pendingRequests.set(requestId, { resolve, reject });
-        try {
-            pythonProcess.stdin.write(JSON.stringify(command) + '\n');
-            console.log('Sent set-model request to Python:', command);
-        } catch (e) {
-            pendingRequests.delete(requestId);
-            reject(e);
-        }
-    });
+// Handle model selection changes
+ipcMain.handle('set-embedding-model', async (event, modelName) => {
+    return handleModelChange('embedding', modelName);
 });
+
+ipcMain.handle('set-image-embedding-model', async (event, modelName) => {
+    return handleModelChange('image_embedding', modelName);
+});
+
+ipcMain.handle('set-querying-model', async (event, modelName) => {
+    return handleModelChange('querying', modelName);
+});
+
+// Helper function to handle model changes
+async function handleModelChange(type, modelName) {
+    const requestId = uuidv4();
+    console.log(`Handling model change: type=${type}, model=${modelName}, requestId=${requestId}`);
+    
+    try {
+        const command = {
+            type: `set_${type}_model`,
+            model_name: modelName,
+            request_id: requestId
+        };
+        console.log('Sending command to Python:', command);
+        
+        const result = await sendToPython(command);
+        console.log('Received response from Python:', result);
+        
+        if (!result) {
+            throw new Error('No response received from Python backend');
+        }
+        
+        return result;
+    } catch (error) {
+        console.error(`Error setting ${type} model:`, error);
+        return { 
+            type: 'error', 
+            message: `Failed to set ${type} model: ${error.message}`,
+            request_id: requestId
+        };
+    }
+}
 
 app.on('window-all-closed', () => {
     console.log("All windows closed."); // <-- Add log

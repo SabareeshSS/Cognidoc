@@ -5,16 +5,16 @@
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:5001">
     <meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:5001">
-    <title>Cognidoc</title>
+    <title>CartaMind</title>
     <link rel="stylesheet" href="css/interface.css">
 </head>
 <body>
-    <h1>Cognidoc</h1>
-    <p>Interact with Cognidoc, powered by local LLMs, to get answers about documents or images.</p>
+    <h1>CartaMind</h1>
+    <p>Interact with CartaMind, powered by local LLMs, to get answers about documents or images.</p>
 
     <div class="container">
         <div class="left-panel">
-            <h2>1. Process File</h2>
+            <h2>Process File</h2>
             <label for="fileInput">Upload Document</label>
             <input type="file" id="fileInput" name="fileInput" accept=".pdf,.txt,.docx,.jpg,.jpeg,.png,.gif,.bmp" multiple>
             <div class="model-selector">
@@ -35,7 +35,7 @@
         </div>
 
         <div class="right-panel">
-            <h2>2. Ask Question</h2>
+            <h2>Ask Question</h2>
             <div class="model-selector">
                 <label for="queryingModel">Querying Model:</label>
                 <select id="queryingModel" class="model-select">
@@ -47,7 +47,10 @@
             <button id="submitButton" disabled>Submit Query</button>
             <h3>Answer / Summary</h3>
             <textarea id="answerOutput" rows="12" readonly></textarea>
-            <button id="clearButton" disabled>Clear</button>
+            <div class="button-group">
+                <button id="clearButton" disabled>Clear</button>
+                <button id="clearAllButton">Clear All</button>
+            </div>
         </div>
     </div>
 
