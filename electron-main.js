@@ -231,10 +231,14 @@ function sendToPython(data) {
             return;
         }
 
-        const requestId = data.request_id;
+        // Ensure we have a request ID
+        const requestId = data.request_id || uuidv4();
+        data.request_id = requestId;
+        
         pendingRequests.set(requestId, { resolve, reject });
 
         try {
+            console.log('Sending to Python:', data);
             pythonProcess.stdin.write(JSON.stringify(data) + '\n');
         } catch (error) {
             pendingRequests.delete(requestId);
@@ -268,20 +272,35 @@ ipcMain.handle('submit-query', async (event, queryText) => {
     if (!pythonProcess) {
         throw new Error('Python backend process is not running.');
     }
+    
     const requestId = uuidv4();
-    const command = { type: 'query', query_text: queryText, request_id: requestId };
-    // Similar promise structure as 'process-file'
-    return new Promise((resolve, reject) => {
-        pendingRequests.set(requestId, { resolve, reject });
-        try {
-            pythonProcess.stdin.write(JSON.stringify(command) + '\n');
-            console.log('Sent to Python:', command);
-        } catch (e) {
-            pendingRequests.delete(requestId);
-            reject(e);
+    try {
+        const response = await sendToPython({
+            type: 'query',
+            query_text: queryText,
+            request_id: requestId
+        });
+        
+        console.log('Query response:', response);
+        
+        // Only broadcast valid query responses
+        if (response.type === 'query_result' || response.type === 'query_response') {
+            if (mainWindow) {
+                mainWindow.webContents.send('query-response', response);
+            }
         }
-         // Add a timeout?
-    });
+        
+        return response;
+    } catch (e) {
+        console.error('Error processing query:', e);
+        return {
+            type: 'query_result',
+            success: false,
+            message: e.message,
+            answer: null,
+            request_id: requestId
+        };
+    }
 });
 
 // Handle model listing
@@ -372,6 +391,24 @@ async function handleModelChange(type, modelName) {
         };
     }
 }
+
+// IPC handlers
+ipcMain.handle('process-files', async (event, filePaths) => {
+    console.log('Processing files:', filePaths);
+    try {
+        const command = {
+            type: 'process_files',
+            file_paths: filePaths
+        };
+
+        const response = await sendToPython(command);
+        console.log('Process files response:', response);
+        return response;
+    } catch (error) {
+        console.error('Error processing files:', error);
+        throw error;
+    }
+});
 
 app.on('window-all-closed', () => {
     console.log("All windows closed."); // <-- Add log

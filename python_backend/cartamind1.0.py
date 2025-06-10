@@ -70,10 +70,10 @@ CHROMA_PERSIST_DIR = os.path.join(SCRIPT_DIR, "chroma_db_electron")
 COLLECTION_NAME = "cartamind_collection_v1"
 
 # Processing Configuration
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 100
-TEXT_RETRIEVER_K = 50
-IMAGE_RETRIEVER_K = 1
+CHUNK_SIZE = 500  # Size of text chunks for splitting documents
+CHUNK_OVERLAP = 100  # Overlap between chunks to maintain context
+TEXT_RETRIEVER_K = 50  # Number of relevant chunks to retrieve for each query
+IMAGE_RETRIEVER_K = 1  # Number of images to retrieve for each query
 
 # Model Configuration - Initialize with None, will be set from models.json
 TEXT_EMBEDDING_MODEL = None
@@ -714,6 +714,67 @@ def reset_collection():
         raise
 
 # --- Document Processing Helpers ---
+def load_and_split_text_document(file_path: str) -> Optional[List[Document]]:
+    """Loads a TEXT-BASED document (PDF, TXT, DOCX), splits it, and cleans metadata."""
+    try:
+        if file_path.lower().endswith('.pdf'):
+            loader = PyMuPDFLoader(file_path)
+        elif file_path.lower().endswith('.txt'):
+            loader = TextLoader(file_path, encoding='utf-8', autodetect_encoding=True)
+        else:
+            logger.error(f"Unsupported document type: {file_path}")
+            return None
+
+        documents = loader.load()
+        if not documents:
+            logger.warning(f"No content loaded from {file_path}")
+            return []
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP
+        )
+        chunks = text_splitter.split_documents(documents)
+        cleaned_chunks = filter_complex_metadata(chunks)
+
+        if not cleaned_chunks:
+            logger.warning(f"No valid chunks after processing {file_path}")
+            return []
+
+        logger.info(f"Split {file_path} into {len(cleaned_chunks)} chunks")
+        return cleaned_chunks
+
+    except Exception as e:
+        logger.error(f"Error processing document {file_path}: {e}", exc_info=True)
+        return None
+
+async def load_multiple_documents_from_files(file_paths: List[str]) -> List[Document]:
+    """
+    Load and split multiple documents in parallel.
+    
+    Args:
+        file_paths: List of file paths to process
+    
+    Returns:
+        List of Document chunks from all files
+    """
+    all_chunks = []
+    
+    # Process each file
+    for file_path in file_paths:
+        try:
+            chunks = load_and_split_text_document(file_path)
+            if chunks:
+                all_chunks.extend(chunks)
+                logger.info(f"Successfully processed {file_path} into {len(chunks)} chunks")
+            else:
+                logger.warning(f"No chunks extracted from {file_path}")
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {e}")
+            continue
+            
+    return all_chunks
+
 async def process_text_document(file_path: str) -> List[Document]:
     """Process a text document and return chunks."""
     try:
@@ -900,23 +961,64 @@ async def handle_document_processing(file_path: str) -> Dict[str, Any]:
                 logger.info(f"Processing '{os.path.basename(file_path)}'...")
                 status_messages = []
                 
-                # Detect file type and process accordingly
+                # For text documents (txt, pdf, docx)
                 if file_path.lower().endswith(('.txt', '.pdf', '.docx')):
-                    status_messages.append('Detected TEXT file. Loading, splitting, embedding...')
-                    result = await process_document_internal(file_path)
+                    status_messages.append('Loading and splitting document...')
                     
-                    if result["status"] == "success":
-                        status = "\n".join(status_messages + [
-                            f"Split TEXT file into {result['chunks_processed']} text chunks. Embedding...",
-                            "Stored chunk embeddings.",
-                            f"Processing complete."
-                        ])
-                        return {
-                            "type": "process_complete",
-                            "status": status
-                        }
-                    else:
-                        raise Exception(result["message"])
+                    # Load and process document
+                    chunks = await process_text_document(file_path)
+                    if not chunks:
+                        raise ValueError(f"No valid chunks extracted from {file_path}")
+                    
+                    status_messages.append(f"Successfully split into {len(chunks)} chunks")
+                    
+                    # Initialize embeddings
+                    embeddings = OllamaEmbeddings(model=current_embedding_model)
+                    
+                    # Get collection
+                    collection = initialize_chroma_client()
+                    
+                    # Generate embeddings in parallel
+                    successful_embeddings = generate_text_embeddings_parallel(chunks, embeddings)
+                    if not successful_embeddings:
+                        raise ValueError("Failed to generate embeddings")
+                    
+                    # Prepare data for collection
+                    ids = [f"{os.path.basename(file_path)}_{i}" for i, _ in successful_embeddings]
+                    embeddings_list = [emb for _, emb in successful_embeddings]
+                    metadatas = [{"source": file_path, "chunk": i} for i, _ in enumerate(successful_embeddings)]
+                    documents = [chunks[i].page_content for i, _ in enumerate(successful_embeddings)]
+
+                    # Add to collection
+                    try:
+                        collection.add(
+                            ids=ids,
+                            embeddings=embeddings_list,
+                            metadatas=metadatas,
+                            documents=documents
+                        )
+                    except Exception as e:
+                        if "dimension" in str(e).lower():
+                            collection = reset_collection()
+                            collection.add(
+                                ids=ids,
+                                embeddings=embeddings_list,
+                                metadatas=metadatas,
+                                documents=documents
+                            )
+                        else:
+                            raise
+
+                    status = "\n".join(status_messages + [
+                        f"Generated embeddings for {len(successful_embeddings)} chunks",
+                        "Stored in vector database",
+                        f"Processing complete for {os.path.basename(file_path)}"
+                    ])
+                    return {
+                        "type": "process_complete",
+                        "status": status,
+                        "chunks_processed": len(successful_embeddings)
+                    }
                 else:
                     raise ValueError(f"Unsupported file type: {file_path}")
                     
@@ -947,36 +1049,112 @@ def run_async(func):
 async def process_response_internal(query_text: str) -> Dict[str, Any]:
     """Process a query and generate a response."""
     try:
-        # Initialize embeddings with current model
-        embeddings = OllamaEmbeddings(model=current_embedding_model)
-        collection = initialize_chroma_client()
+        result = await process_query(query_text)
         
-        # Generate query embedding
-        query_embedding = await generate_embedding(query_text, embeddings)
-        
-        # Search for relevant documents
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=TEXT_RETRIEVER_K
-        )
-        
-        if not results['documents'][0]:
-            return "No relevant context found for the query."
+        # Make sure we always return a query_result type
+        if result.get('type') == 'query_response':
+            result['type'] = 'query_result'
             
-        # Format context and query
-        context = "\n\n".join(results['documents'][0])
-        prompt = f"Context:\n{context}\n\nQuestion: {query_text}\n\nAnswer:"
-        
-        # Get response from LLM using chat instead of generate
-        response = ollama.chat(
-            model=current_querying_model,
-            messages=[{'role': 'user', 'content': prompt}]
-        )
-        return response.get('message', {}).get('content', '')
+        return result
+    except Exception as e:
+        logger.error(f"Error processing response: {e}", exc_info=True)
+        return {
+            "type": "query_result",
+            "success": False,
+            "message": f"Error processing query: {str(e)}",
+            "answer": None,
+            "sources": [],
+            "chunks_used": 0
+        }
         
     except Exception as e:
         logger.error(f"Error processing response: {e}", exc_info=True)
         raise
+
+async def process_query(query_text: str, collection_name: str = COLLECTION_NAME) -> Dict[str, Any]:
+    """
+    Process a query against the document collection and return the response.
+    
+    Args:
+        query_text (str): The user's query
+        collection_name (str): Name of the ChromaDB collection to query
+        
+    Returns:
+        Dict[str, Any]: Response containing the answer and status
+    """
+    try:
+        logger.info(f"Processing query: {query_text}")
+        
+        # Get collection and ensure it has documents
+        collection = initialize_chroma_client()
+        if collection.count() == 0:
+            return {
+                "type": "query_result",
+                "success": False,
+                "message": "No documents have been processed yet. Please process documents first.",
+                "answer": None,
+                "sources": [],
+                "chunks_used": 0
+            }
+        
+        # Initialize embeddings with current model
+        embeddings = OllamaEmbeddings(model=current_embedding_model)
+        query_embedding = await embeddings.aembed_query(query_text)
+        
+        # Get relevant chunks
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=TEXT_RETRIEVER_K,
+            include=['documents', 'metadatas']
+        )
+        
+        if not results or not results['documents'] or not results['documents'][0]:
+            return {
+                "type": "query_result",
+                "success": False,
+                "message": "No relevant context found in the processed documents.",
+                "answer": None,
+                "sources": [],
+                "chunks_used": 0
+            }
+        # Prepare context from retrieved documents
+        context = "\n".join(results['documents'][0])
+        
+        # Query LLM with context
+        llm_model = LLM_MODEL or "llama2:13b"
+        prompt = f"""Based on the following context, please answer the question. If the answer cannot be determined from the context, say so.
+
+Context:
+{context}
+
+Question: {query_text}
+
+Answer:"""
+
+        response = ollama.chat(
+            model=llm_model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        answer = response['message']['content']
+        
+        return {
+            "type": "query_result",
+            "success": True,
+            "message": "Query processed successfully",
+            "answer": answer,
+            "request_id": None
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing query: {e}", exc_info=True)
+        return {
+            "type": "query_result",
+            "success": False,
+            "message": f"Error processing query: {str(e)}",
+            "answer": None,
+            "request_id": None
+        }
 
 # --- Main Request Handler ---
 def handle_request(request_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -990,6 +1168,8 @@ def handle_request(request_data: Dict[str, Any]) -> Dict[str, Any]:
             return run_async(set_embedding_model)(request_data.get('model_name'))
         elif request_type == 'submit_query':
             return run_async(lambda: process_response_internal(request_data.get('query')))()
+        elif request_type == 'process_query':
+            return run_async(lambda: process_query(request_data.get('query')))()
         else:
             return {
                 "type": "error",
@@ -1023,9 +1203,147 @@ def send_response(data: Dict[str, Any]):
         print(error_json, flush=True)
 
 # --- Main Loop ---
+async def process_files(file_paths: List[str]) -> Dict[str, Any]:
+    """
+    Process multiple files and store their embeddings in the vector store.
+    
+    Args:
+        file_paths: List of file paths to process
+        
+    Returns:
+        Dict with processing status and message
+    """
+    try:
+        logger.info(f"Processing files: {file_paths}")
+        
+        # Validate file paths
+        valid_paths = []
+        for path in file_paths:
+            if os.path.exists(path):
+                valid_paths.append(path)
+            else:
+                logger.warning(f"File not found: {path}")
+                
+        if not valid_paths:
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": "No valid files found at the provided paths."
+            }
+        
+        # Initialize ChromaDB client
+        client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        
+        try:
+            collection = client.get_collection(COLLECTION_NAME)
+            logger.info("Got existing collection")
+        except:
+            collection = client.create_collection(COLLECTION_NAME)
+            logger.info("Created new collection")
+            
+        # Initialize embeddings model
+        try:
+            embed_model = OllamaEmbeddings(
+                model=current_embedding_model or TEXT_EMBEDDING_MODEL or "all-minilm"
+            )
+            logger.info(f"Initialized embedding model: {embed_model.model}")
+        except Exception as e:
+            logger.error(f"Failed to initialize embedding model: {e}")
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": f"Failed to initialize embedding model: {str(e)}"
+            }
+            
+        # Load and split documents
+        all_chunks = await load_multiple_documents_from_files(valid_paths)
+        if not all_chunks:
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": "No valid content found in the provided files."
+            }
+            
+        # Generate embeddings asynchronously
+        embeddings = []
+        ids = []
+        texts = []
+        
+        # Process chunks in batches
+        batch_size = 10
+        total_chunks = len(all_chunks)
+        processed = 0
+        
+        for i in range(0, total_chunks, batch_size):
+            batch = all_chunks[i:i + batch_size]
+            batch_embeddings = []
+            
+            try:
+                # Generate embeddings for batch
+                for chunk in batch:
+                    try:
+                        embedding = await generate_embedding(chunk.page_content, embed_model)
+                        batch_embeddings.append((chunk, embedding))
+                    except Exception as e:
+                        logger.error(f"Failed to generate embedding for chunk: {e}")
+                        continue
+                
+                # Add successful embeddings to lists
+                for chunk, embedding in batch_embeddings:
+                    embeddings.append(embedding)
+                    ids.append(f"doc_{uuid.uuid4()}")
+                    texts.append(chunk.page_content)
+                
+                processed += len(batch_embeddings)
+                logger.info(f"Processed {processed}/{total_chunks} chunks")
+                
+            except Exception as batch_error:
+                logger.error(f"Error processing batch: {batch_error}")
+                continue
+        
+        if not embeddings:
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": "Failed to generate any valid embeddings."
+            }
+            
+        try:
+            # Add to collection
+            collection.add(
+                embeddings=embeddings,
+                documents=texts,
+                ids=ids
+            )
+            
+            message = f"Successfully processed {len(valid_paths)} files.\n"
+            message += f"Generated embeddings for {len(embeddings)} chunks."
+            
+            return {
+                "type": "processing_status",
+                "success": True,
+                "message": message
+            }
+            
+        except Exception as add_error:
+            logger.error(f"Failed to add embeddings to collection: {add_error}")
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": f"Failed to store embeddings: {str(add_error)}"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error processing files: {e}", exc_info=True)
+        return {
+            "type": "processing_status",
+            "success": False,
+            "message": f"Error processing files: {str(e)}"
+        }
+
 async def handle_command(command_data: Dict[str, Any]):
     """Handle individual commands asynchronously."""
-    command = command_data.get('type')  # Changed from 'command' to 'type'
+    command = command_data.get('type')
     request_id = command_data.get('request_id', 'unknown')
     
     logger.info(f"Processing command: {command} (request_id: {request_id})")
@@ -1046,16 +1364,16 @@ async def handle_command(command_data: Dict[str, Any]):
                 'request_id': request_id
             }
         
-        elif command == 'process':
-            file_path = command_data.get('file_path')
-            if not file_path:
+        elif command == 'process_files':
+            file_paths = command_data.get('file_paths', [])
+            if not file_paths:
                 return {
                     'type': 'error',
-                    'message': 'No file path provided',
+                    'message': 'No file paths provided',
                     'request_id': request_id
                 }
 
-            result = await handle_process_document(file_path)
+            result = await process_files(file_paths)
             result['request_id'] = request_id
             return result
                 
@@ -1068,12 +1386,9 @@ async def handle_command(command_data: Dict[str, Any]):
                     'request_id': request_id
                 }
 
-            answer = await process_response_internal(query_text)
-            return {
-                'type': 'query_result',
-                'answer': answer,
-                'request_id': request_id
-            }
+            result = await process_query(query_text)
+            result['request_id'] = request_id
+            return result
             
         elif command == 'get_models':
             models = get_available_models()
@@ -1259,3 +1574,321 @@ def validate_models_json() -> None:
 
 # Call validation on startup
 validate_models_json()
+
+async def load_multiple_documents_from_files(file_paths: List[str], chunk_size: int = CHUNK_SIZE, chunk_overlap: int = CHUNK_OVERLAP) -> List[Document]:
+    """
+    Load and split multiple documents in parallel.
+    
+    Args:
+        file_paths: List of file paths to process
+        chunk_size: Size of text chunks
+        chunk_overlap: Overlap between chunks
+    
+    Returns:
+        List of Document chunks from all files
+    """
+    all_chunks = []
+    
+    # Process each file
+    for file_path in file_paths:
+        try:
+            chunks = await process_text_document(file_path)
+            if chunks:
+                all_chunks.extend(chunks)
+                logger.info(f"Successfully processed {file_path} into {len(chunks)} chunks")
+            else:
+                logger.warning(f"No chunks extracted from {file_path}")
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {e}")
+            continue
+            
+    return all_chunks
+
+async def process_query(query_text: str) -> Dict[str, Any]:
+    """
+    Process a query using RAG approach with context from all available document chunks.
+    
+    Args:
+        query_text: The user's question or 'summarize' request
+        
+    Returns:
+        Dict containing answer and metadata about sources used
+    """
+    try:
+        # Get collection and ensure it has documents
+        collection = initialize_chroma_client()
+        if collection.count() == 0:
+            return {
+                "type": "query_result",
+                "success": False,
+                "message": "No documents have been processed yet. Please process documents first.",
+                "answer": None,
+                "sources": [],
+                "chunks_used": 0
+            }
+        
+        # Initialize query embeddings
+        embeddings = OllamaEmbeddings(model=current_embedding_model)
+        query_embedding = await embeddings.aembed_query(query_text)
+        
+        # Get relevant chunks
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=TEXT_RETRIEVER_K,
+            include=['documents', 'metadatas']
+        )
+        
+        if not results or not results['documents']:
+            return {
+                "type": "query_result",
+                "success": False,
+                "message": "No relevant context found in the processed documents.",
+                "answer": None,
+                "sources": [],
+                "chunks_used": 0
+            }
+            
+        # Build context from chunks
+        contexts = []
+        sources = set()
+        for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
+            source = os.path.basename(meta['source'])
+            sources.add(source)
+            contexts.append(f"From {source}:\n{doc}")
+        
+        context = "\n\n".join(contexts)
+        
+        # Format prompt with specific instruction to use only provided context
+        prompt = f"""Using *only* the context provided below, answer the question.  
+If the answer cannot be determined from the context, say so.
+
+Context:  
+{context}
+
+Question: {query_text}
+
+Answer:"""
+
+        # Get answer from LLM using chat API
+        response = ollama.chat(
+            model=current_querying_model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        answer = response['message']['content']
+        
+        return {
+            "type": "query_result",
+            "success": True,
+            "message": "Query processed successfully",
+            "answer": answer,
+            "sources": list(sources),
+            "chunks_used": len(contexts)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing query: {e}", exc_info=True)
+        return {
+            "type": "query_result",
+            "success": False,
+            "message": f"Error processing query: {str(e)}",
+            "answer": None,
+            "sources": [],
+            "chunks_used": 0
+        }
+
+async def handle_query_command(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle the query command from the frontend."""
+    try:
+        query = data.get('query')
+        if not query:
+            return {
+                'type': 'error',
+                'message': 'No query provided'
+            }
+            
+        # Process the query
+        result = await process_query(query)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error handling query command: {e}", exc_info=True)
+        return {
+            'type': 'error',
+            'message': f'Error processing query: {str(e)}'
+        }
+
+async def handle_command(data: Dict[str, Any]) -> None:
+    """Handle incoming commands from the frontend."""
+    try:
+        command = data.get('command')
+        if not command:
+            raise ValueError("No command specified")
+            
+        response = None
+        
+        if command == 'get_models':
+            category = data.get('category')
+            if not category:
+                raise ValueError("No category specified for get_models command")
+            response = {'type': 'models_list', 'models': get_models_by_category(category)}
+            
+        elif command == 'process_files':
+            file_paths = data.get('file_paths', [])
+            if not file_paths:
+                raise ValueError("No file paths provided for processing")
+            response = await process_files(file_paths)
+            
+        elif command == 'query':
+            response = await handle_query_command(data)
+            
+        else:
+            raise ValueError(f"Unknown command: {command}")
+            
+        if response:
+            send_response(response)
+            
+    except Exception as e:
+        logger.error(f"Error handling command: {e}", exc_info=True)
+        send_response({
+            'type': 'error',
+            'message': f'Command processing error: {str(e)}'
+        })
+
+async def process_files(file_paths: List[str]) -> Dict[str, Any]:
+    """
+    Process multiple files and store their embeddings in the vector store.
+    
+    Args:
+        file_paths: List of file paths to process
+        
+    Returns:
+        Dict with processing status and message
+    """
+    try:
+        logger.info(f"Processing files: {file_paths}")
+        
+        # Validate file paths
+        valid_paths = []
+        for path in file_paths:
+            if os.path.exists(path):
+                valid_paths.append(path)
+            else:
+                logger.warning(f"File not found: {path}")
+                
+        if not valid_paths:
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": "No valid files found at the provided paths."
+            }
+        
+        # Initialize ChromaDB client
+        client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        
+        try:
+            collection = client.get_collection(COLLECTION_NAME)
+            logger.info("Got existing collection")
+        except:
+            collection = client.create_collection(COLLECTION_NAME)
+            logger.info("Created new collection")
+            
+        # Initialize embeddings model
+        try:
+            embed_model = OllamaEmbeddings(
+                model=current_embedding_model or TEXT_EMBEDDING_MODEL or "all-minilm"
+            )
+            logger.info(f"Initialized embedding model: {embed_model.model}")
+        except Exception as e:
+            logger.error(f"Failed to initialize embedding model: {e}")
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": f"Failed to initialize embedding model: {str(e)}"
+            }
+            
+        # Load and split documents
+        all_chunks = await load_multiple_documents_from_files(valid_paths)
+        if not all_chunks:
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": "No valid content found in the provided files."
+            }
+            
+        # Generate embeddings asynchronously
+        embeddings = []
+        ids = []
+        texts = []
+        
+        # Process chunks in batches
+        batch_size = 10
+        total_chunks = len(all_chunks)
+        processed = 0
+        
+        for i in range(0, total_chunks, batch_size):
+            batch = all_chunks[i:i + batch_size]
+            batch_embeddings = []
+            
+            try:
+                # Generate embeddings for batch
+                for chunk in batch:
+                    try:
+                        embedding = await generate_embedding(chunk.page_content, embed_model)
+                        batch_embeddings.append((chunk, embedding))
+                    except Exception as e:
+                        logger.error(f"Failed to generate embedding for chunk: {e}")
+                        continue
+                
+                # Add successful embeddings to lists
+                for chunk, embedding in batch_embeddings:
+                    embeddings.append(embedding)
+                    ids.append(f"doc_{uuid.uuid4()}")
+                    texts.append(chunk.page_content)
+                
+                processed += len(batch_embeddings)
+                logger.info(f"Processed {processed}/{total_chunks} chunks")
+                
+            except Exception as batch_error:
+                logger.error(f"Error processing batch: {batch_error}")
+                continue
+        
+        if not embeddings:
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": "Failed to generate any valid embeddings."
+            }
+            
+        try:
+            # Add to collection
+            collection.add(
+                embeddings=embeddings,
+                documents=texts,
+                ids=ids
+            )
+            
+            message = f"Successfully processed {len(valid_paths)} files.\n"
+            message += f"Generated embeddings for {len(embeddings)} chunks."
+            
+            return {
+                "type": "processing_status",
+                "success": True,
+                "message": message
+            }
+            
+        except Exception as add_error:
+            logger.error(f"Failed to add embeddings to collection: {add_error}")
+            return {
+                "type": "processing_status",
+                "success": False,
+                "message": f"Failed to store embeddings: {str(add_error)}"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error processing files: {e}", exc_info=True)
+        return {
+            "type": "processing_status",
+            "success": False,
+            "message": f"Error processing files: {str(e)}"
+        }

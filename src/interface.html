@@ -16,33 +16,42 @@
         <div class="left-panel">
             <h2>Process File</h2>
             <label for="fileInput">Upload Document</label>
-            <input type="file" id="fileInput" name="fileInput" accept=".pdf,.txt,.docx,.jpg,.jpeg,.png,.gif,.bmp" multiple>
+            <input type="file" id="fileInput" name="fileInput" accept=".pdf,.txt,.docx,.jpg,.jpeg,.png,.gif,.bmp" multiple>            
+            <div id="fileList" class="file-list">
+                <ul id="selectedFilesList"></ul>
+            </div>
             <div class="model-selector">
-                <label for="embeddingModel">Embedding Model:</label>
+                <label for="embeddingModel">Embedding Model</label>
                 <select id="embeddingModel" class="model-select">
                     <!-- Will be populated from models.json -->
                 </select>
             </div>
             <div class="model-selector">
-                <label for="imageEmbeddingModel">Image Embedding Model:</label>
+                <label for="imageEmbeddingModel">Image Embedding Model</label>
                 <select id="imageEmbeddingModel" class="model-select">
                     <!-- Will be populated from models.json -->
                 </select>
             </div>
+            <!-- Processing Status Box -->
+            <div class="status-box">
+                <div id="progressBarContainer" class="progress-bar-container">
+                    <div id="progressBar" class="progress-bar"></div>
+                    <span id="progressText" class="progress-text">Ready. Upload files and click 'Process'.</span>
+                </div>
+            </div>
+            <!-- End Processing Status Box -->
             <button id="processButton">Process Documents</button>
-            <h3>Processing Status</h3>
-            <textarea id="statusOutput" rows="8" readonly>Ready. Upload files and click 'Process'.</textarea>
         </div>
 
         <div class="right-panel">
             <h2>Ask Question</h2>
             <div class="model-selector">
-                <label for="queryingModel">Querying Model:</label>
+                <label for="queryingModel">Querying Model</label>
                 <select id="queryingModel" class="model-select">
                     <!-- Will be populated from models.json -->
                 </select>
             </div>
-            <label for="queryInput">Ask a Question or Request Summary:</label>
+            <label for="queryInput">Ask a Question or Request Summary</label>
             <textarea id="queryInput" rows="3" placeholder="Upload & Process a file first..." disabled></textarea>
             <button id="submitButton" disabled>Submit Query</button>
             <h3>Answer / Summary</h3>

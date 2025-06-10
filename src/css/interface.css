@@ -56,6 +56,7 @@ label {
 .container {
     display: flex;
     flex-wrap: wrap; /* Allow panels to wrap on smaller screens */
+    align-items: stretch; /* Ensure panels in the same row have the same height */
     gap: 30px; /* Space between panels */
     max-width: 1200px;
     margin: 0 auto; /* Center the container */
@@ -117,6 +118,7 @@ textarea {
     box-shadow: inset 0 1px 3px var(--shadow-color-dark);
     margin-bottom: 15px;
 }
+
 
 textarea:read-only {
     background-color: #252525; /* Slightly different background for readonly */
@@ -223,4 +225,114 @@ button:disabled {
     background-color: #2d2d2d;
     color: #e0e0e0;
     padding: 8px;
+}
+
+/* --- File List Styles --- */
+.file-list {
+    margin: 10px 0;
+    padding: 10px;
+    background-color: var(--input-background);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+.file-list h4 {
+    margin: 0 0 10px 0;
+    color: var(--accent-green-light);
+}
+
+.file-list ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.file-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px;
+    margin: 2px 0;
+    background-color: var(--panel-background);
+    border-radius: 3px;
+}
+
+.file-list li:hover {
+    background-color: var(--input-background);
+}
+
+.remove-file {
+    background: none;
+    border: none;
+    color: var(--accent-green-light);
+    cursor: pointer;
+    padding: 0 5px;
+    font-size: 1.2em;
+}
+
+.remove-file:hover {
+    color: var(--accent-green-text);
+}
+
+#addButton {
+    display: block;
+    width: 100%;
+    margin: 10px 0;
+    padding: 8px;
+    background-color: var(--accent-green-dark);
+    color: var(--primary-text-color);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#addButton:hover:not(:disabled) {
+    background-color: var(--accent-green-medium);
+}
+
+#addButton:disabled {
+    background-color: var(--disabled-color);
+    cursor: not-allowed;
+}
+
+#pendingFileList, #fileList {
+    margin-top: 15px;
+    padding: 10px;
+    background-color: var(--panel-background);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+#pendingFileList h4, #fileList h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: var(--accent-green-text);
+}
+
+#pendingFilesList li, #selectedFilesList li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px;
+    margin-bottom: 5px;
+    background-color: var(--input-background);
+    border-radius: 3px;
+}
+/* --- Status Box --- */
+.status-box {
+    background-color: var(--input-background); /* Match input fields for a contained look */
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 15px;
+    margin-bottom: 20px; /* Space before the "Process Documents" button */
+}
+
+.status-box h3 {
+    margin-top: 0;
+    margin-bottom: 10px; /* Space between heading and progress bar */
+    font-size: 1.1em; /* Slightly smaller heading for inside the box */
+}
+
+.status-box .progress-bar-container {
+    margin-bottom: 0; /* The status-box itself has margin-bottom */
 }

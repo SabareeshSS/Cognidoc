@@ -6,6 +6,7 @@ try {
         // Ensure all functions needed by guiExample.js are listed here
         // openFileDialog: () => ipcRenderer.invoke('dialog:openFile'), // Add if needed by guiexample.js
         processFile: (filePath) => ipcRenderer.invoke('process-file', filePath),
+        processFiles: (filePaths) => ipcRenderer.invoke('process-files', filePaths),
         submitQuery: (queryText) => ipcRenderer.invoke('submit-query', queryText),
         getModels: () => ipcRenderer.invoke('get-models'),
         setEmbeddingModel: (modelName) => ipcRenderer.invoke('set-embedding-model', modelName),

@@ -2,14 +2,105 @@
 const fileInput = document.getElementById('fileInput');
 const processButton = document.getElementById('processButton');
 const clearButton = document.getElementById('clearButton');
-const statusOutput = document.getElementById('statusOutput');
+const clearAllButton = document.getElementById('clearAllButton');
+// const statusOutput = document.getElementById('statusOutput'); // Old status textarea
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
 const queryInput = document.getElementById('queryInput');
 const submitButton = document.getElementById('submitButton');
 const answerOutput = document.getElementById('answerOutput');
 const embeddingModel = document.getElementById('embeddingModel');
 const imageEmbeddingModel = document.getElementById('imageEmbeddingModel');
 const queryingModel = document.getElementById('queryingModel');
+const selectedFilesList = document.getElementById('selectedFilesList');
 
+// Helper function to update the progress bar and status text
+function updateStatus(text, percentage = -1, statusType = 'info') { // statusType: 'info', 'processing', 'success', 'error'
+    if (progressText) {
+        progressText.textContent = text;
+    }
+    if (progressBar) {
+        if (typeof percentage === 'number' && percentage >= 0 && percentage <= 100) {
+            progressBar.style.width = `${percentage}%`;
+        }
+
+        switch (statusType) {
+            case 'error':
+                progressBar.style.backgroundColor = '#cc3333'; // Error red
+                break;
+            case 'success':
+                progressBar.style.backgroundColor = 'var(--accent-green-dark)'; // Success green
+                break;
+            case 'processing':
+                progressBar.style.backgroundColor = 'var(--accent-green-medium)'; // Processing green
+                break;
+            case 'info':
+            default:
+                progressBar.style.backgroundColor = 'var(--accent-green-medium)';
+                // Optional: make it less visible or match track if 0% and info
+                if (progressBar.style.width === '0%') {
+                    // progressBar.style.backgroundColor = 'var(--input-background)'; // Example: match track
+                }
+                break;
+        }
+    }
+}
+
+// Initialize event listeners when DOM is fully loaded
+document.addEventListener('DOMContentLoaded', () => {
+    if (!fileInput || !selectedFilesList) {
+        console.error('Required elements not found:', {
+            fileInput: !!fileInput,
+            selectedFilesList: !!selectedFilesList
+        });
+        return;
+    }
+
+    // File input event listener
+    fileInput.addEventListener('change', handleFileSelection);
+    
+    console.log('Event listeners initialized');
+});
+
+// File handling functions
+function handleFileSelection(event) {
+    console.log('File selection change event triggered');
+    const files = event.target.files;
+    let filesActuallyAdded = 0;
+    
+    if (files && files.length > 0) {
+        console.log(`${files.length} files selected from input`);
+        const newFilesInput = Array.from(files);
+        
+        newFilesInput.forEach(newFile => {
+            // Add to selected files, preventing duplicates by name
+            if (!currentFiles.some(existingFile => existingFile.name === newFile.name)) {
+                currentFiles.push(newFile);
+                filesActuallyAdded++;
+            } else {
+                console.log(`File ${newFile.name} already in selected list.`);
+            }
+        });
+        
+        if (filesActuallyAdded > 0) {
+            updateFileList(currentFiles, selectedFilesList, false);
+            updateStatus(`${filesActuallyAdded} file(s) added to selection. Add more, or choose models and Process.`, 0, 'info');
+            processButton.disabled = false;
+        } else if (newFilesInput.length > 0) { // Files were selected, but all were duplicates
+            updateStatus(`Selected file(s) are already in the list. Add more, or choose models and Process.`, 0, 'info');
+        }
+        
+        // Clear input to allow re-selecting the same file if user removes it and wants to add again
+        fileInput.value = ''; 
+        
+        console.log('Current selected files:', currentFiles.map(f => f.name));
+    } else {
+        console.log('No files selected in this input event');
+    }
+    updateButtonStates(); // Update button states based on currentFiles
+}
+
+// State management
 let currentFiles = [];
 let isProcessing = false;
 let isReadyForQuery = false;
@@ -33,10 +124,10 @@ async function initializeModels() {
             const result = await window.electronAPI.getModelsByCategory(category);
             console.log(`Result for ${category}:`, result);
 
-            // Clear existing options for this dropdown
-            element.innerHTML = '';
-
             if (result && result.type === 'models_list' && Array.isArray(result.models)) {
+                // Clear existing options
+                element.innerHTML = '';
+                
                 // Add model options
                 result.models.forEach(model => {
                     const option = document.createElement('option');
@@ -45,48 +136,52 @@ async function initializeModels() {
                     element.appendChild(option);
                 });
 
-                // Set default selection if available
+                // Set default selection
                 if (result.models.length > 0) {
                     element.value = result.models[0];
-                    // Update current model variables
-                    if (element === embeddingModel) currentEmbeddingModel = result.models[0];
-                    if (element === imageEmbeddingModel) currentImageEmbeddingModel = result.models[0];
-                    if (element === queryingModel) currentQueryingModel = result.models[0];
+                    switch(element) {
+                        case embeddingModel:
+                            currentEmbeddingModel = result.models[0];
+                            break;
+                        case imageEmbeddingModel:
+                            currentImageEmbeddingModel = result.models[0];
+                            break;
+                        case queryingModel:
+                            currentQueryingModel = result.models[0];
+                            break;
+                    }
                 }
             } else {
                 console.error(`Invalid response for ${category}:`, result);
-                statusOutput.value += `\nError loading ${category}. Invalid response from backend.`;
+                updateStatus(`Error loading ${category} models. Invalid response.`, 0, 'error');
             }
         }
     } catch (error) {
         console.error('Error initializing models:', error);
-        statusOutput.value += `\nError initializing models: ${error.message}`;
+        updateStatus(`Error initializing models: ${error.message}`, 0, 'error');
     }
 }
 
-// Call initialization on page load
-initializeModels();
-
-// Handle embedding model selection change
+// Model selection change handlers
 embeddingModel.addEventListener('change', async () => {
     const selectedModel = embeddingModel.value;
     if (selectedModel && selectedModel !== currentEmbeddingModel) {
         try {
             embeddingModel.disabled = true;
-            statusOutput.value = `Setting embedding model to ${selectedModel}...`;
+            updateStatus(`Setting embedding model to ${selectedModel}...`, 0, 'info');
             
             const result = await window.electronAPI.setEmbeddingModel(selectedModel);
             console.log('Set embedding model result:', result);
             
             if (result && result.type === 'model_set') {
                 currentEmbeddingModel = selectedModel;
-                statusOutput.value = result.message;
+                updateStatus(result.message, 0, 'success');
             } else {
                 throw new Error(result.message || 'Failed to set embedding model');
             }
         } catch (error) {
             console.error('Error setting embedding model:', error);
-            statusOutput.value = `Error setting embedding model: ${error.message}`;
+            updateStatus(`Error setting embedding model: ${error.message}`, 0, 'error');
             embeddingModel.value = currentEmbeddingModel;
         } finally {
             embeddingModel.disabled = false;
@@ -94,26 +189,25 @@ embeddingModel.addEventListener('change', async () => {
     }
 });
 
-// Handle image embedding model selection change
 imageEmbeddingModel.addEventListener('change', async () => {
     const selectedModel = imageEmbeddingModel.value;
     if (selectedModel && selectedModel !== currentImageEmbeddingModel) {
         try {
             imageEmbeddingModel.disabled = true;
-            statusOutput.value = `Setting image embedding model to ${selectedModel}...`;
+            updateStatus(`Setting image embedding model to ${selectedModel}...`, 0, 'info');
             
             const result = await window.electronAPI.setImageEmbeddingModel(selectedModel);
             console.log('Set image embedding model result:', result);
             
             if (result && result.type === 'model_set') {
                 currentImageEmbeddingModel = selectedModel;
-                statusOutput.value = result.message;
+                updateStatus(result.message, 0, 'success');
             } else {
                 throw new Error(result.message || 'Failed to set image embedding model');
             }
         } catch (error) {
             console.error('Error setting image embedding model:', error);
-            statusOutput.value = `Error setting image embedding model: ${error.message}`;
+            updateStatus(`Error setting image embedding model: ${error.message}`, 0, 'error');
             imageEmbeddingModel.value = currentImageEmbeddingModel;
         } finally {
             imageEmbeddingModel.disabled = false;
@@ -121,26 +215,25 @@ imageEmbeddingModel.addEventListener('change', async () => {
     }
 });
 
-// Handle querying model selection change
 queryingModel.addEventListener('change', async () => {
     const selectedModel = queryingModel.value;
     if (selectedModel && selectedModel !== currentQueryingModel) {
         try {
             queryingModel.disabled = true;
-            statusOutput.value = `Setting querying model to ${selectedModel}...`;
+            updateStatus(`Setting querying model to ${selectedModel}...`, 0, 'info');
             
             const result = await window.electronAPI.setQueryingModel(selectedModel);
             console.log('Set querying model result:', result);
             
             if (result && result.type === 'model_set') {
                 currentQueryingModel = selectedModel;
-                statusOutput.value = result.message;
+                updateStatus(result.message, 0, 'success');
             } else {
                 throw new Error(result.message || 'Failed to set querying model');
             }
         } catch (error) {
             console.error('Error setting querying model:', error);
-            statusOutput.value = `Error setting querying model: ${error.message}`;
+            updateStatus(`Error setting querying model: ${error.message}`, 0, 'error');
             queryingModel.value = currentQueryingModel;
         } finally {
             queryingModel.disabled = false;
@@ -148,94 +241,152 @@ queryingModel.addEventListener('change', async () => {
     }
 });
 
+// File handling
 let processedFiles = [];
 
-// File input change event
-fileInput.addEventListener('change', (event) => {
-    currentFiles = Array.from(event.target.files);
-    if (currentFiles.length > 0) {
-        resetQueryState();
-        answerOutput.value = '';
-        clearButton.disabled = true;
-        const fileNames = currentFiles.map(f => f.name).join(', ');
-        statusOutput.value = `Selected files: ${fileNames}\nClick 'Process' to begin.`;
-    } else {
-        statusOutput.value = "File selection cancelled.";
-    }
-});
-
-// Process button click event
-processButton.addEventListener('click', async () => {
-    if (currentFiles.length === 0) {
-        statusOutput.value = 'Error: No files selected.';
-        return;
-    }
-    if (isProcessing) {
-        statusOutput.value = 'Error: Already processing files.';
-        return;
-    }
-
-    isProcessing = true;
-    resetQueryState();
-    processButton.disabled = true;
-    clearButton.disabled = true;
-    processedFiles = []; // Reset processed files list
-
-    try {
-        for (const file of currentFiles) {
-            statusOutput.value = `Processing '${file.name}'...`;
-            const result = await window.electronAPI.processFile(file.path);
-            console.log("Process Result from Main:", result);
-            
-            if (result.type === 'process_complete') {
-                processedFiles.push(file.name);
-                statusOutput.value = result.status;
-            } else {
-                statusOutput.value += `\nError processing ${file.name}: ${result.message || 'Unknown error'}`;
+function updateFileListItem(filename, status, details = '') {
+    const fileItem = document.querySelector(`#selectedFilesList li[data-filename="${filename}"]`);
+    if (fileItem) {
+        const statusSpan = fileItem.querySelector('.file-status');
+        if (statusSpan) {
+            statusSpan.textContent = status;
+            switch (status) {
+                case 'Error':
+                    statusSpan.style.backgroundColor = '#ff4444';
+                    fileItem.style.borderLeftColor = '#ff4444';
+                    break;
+                case 'Processing':
+                    statusSpan.style.backgroundColor = '#ffa500';
+                    fileItem.style.borderLeftColor = '#ffa500';
+                    break;
+                default:
+                    statusSpan.style.backgroundColor = 'var(--accent-green-dark)';
+                    fileItem.style.borderLeftColor = 'var(--accent-green-dark)';
             }
         }
+        fileItem.title = details || status;
+    }
+}
 
-        if (processedFiles.length > 0) {
+// File handling functions
+function updateFileList(files, listElement) {
+    if (!listElement) {
+        console.error('Invalid list element');
+        return;
+    }
+
+    try {
+        // Clear current list
+        while (listElement.firstChild) {
+            listElement.removeChild(listElement.firstChild);
+        }
+
+        // Convert to array if needed
+        const fileArray = Array.isArray(files) ? files : Array.from(files || []);
+        
+        console.log(`Updating selected files list with ${fileArray.length} files`);
+        
+        fileArray.forEach(file => {
+            const li = document.createElement('li');
+            li.className = 'file-item';
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'file-name';
+            nameSpan.textContent = file.name;
+            li.appendChild(nameSpan);
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.textContent = '×';
+            removeBtn.className = 'remove-file';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                currentFiles = currentFiles.filter(f => f.name !== file.name);
+                updateFileList(currentFiles, selectedFilesList);
+                processButton.disabled = currentFiles.length === 0;
+                
+                if (currentFiles.length === 0) {
+                    updateStatus('All files removed. Please select files to process.', 0, 'info');
+                }
+            };
+            li.appendChild(removeBtn);
+            
+            listElement.appendChild(li);
+        });
+
+        console.log(`Updated file list with ${fileArray.length} files`);
+    } catch (error) {
+        console.error('Error updating file list:', error);
+    }
+}
+
+function updateButtonStates() {
+    // Enable or disable process button based on file selection and processing state
+    processButton.disabled = currentFiles.length === 0 || isProcessing;
+    
+    // Update query-related buttons based on processing state
+    queryInput.disabled = !isReadyForQuery;
+    submitButton.disabled = !isReadyForQuery;
+    clearButton.disabled = !isReadyForQuery;
+    
+    // Update status message if needed
+    if (currentFiles.length > 0 && !isProcessing && !isReadyForQuery) {
+        updateStatus('Files selected. Choose models if needed, then click Process Documents.', 0, 'info');
+    }
+}
+
+// File input event listener
+// Process button event listener
+processButton.addEventListener('click', async () => {
+    if (currentFiles.length === 0) {
+        updateStatus('No files selected for processing.', 0, 'error');
+        return;
+    }
+
+    try {
+        isProcessing = true;
+        updateButtonStates();
+        updateStatus('Processing files...', 50, 'processing');
+
+        // Convert File objects to paths
+        const filePaths = currentFiles.map(file => file.path);
+        
+        // Send to backend for processing
+        const result = await window.electronAPI.processFiles(filePaths);
+        console.log('Process files result:', result);
+
+        if (result.success) {
+            updateStatus(result.message, 100, 'success');
             isReadyForQuery = true;
-            queryInput.disabled = false;
-            submitButton.disabled = false;
-            clearButton.disabled = false;
-            queryInput.placeholder = `Ask about the processed files or type 'summarize'...`;
-            statusOutput.value += `\n\nReady to answer questions about: ${processedFiles.join(', ')}`;
+        } else {
+            throw new Error(result.message || 'Failed to process files');
         }
     } catch (error) {
         console.error('Error processing files:', error);
-        statusOutput.value = `Error processing files: ${error.message}`;
+        updateStatus(`Error processing files: ${error.message}`, 100, 'error'); // Show 100% bar but in error color
+        isReadyForQuery = false;
     } finally {
         isProcessing = false;
-        processButton.disabled = false;
+        updateButtonStates();
     }
 });
 
-// Clear button click event (clears only query section)
+// Clear button handlers
 clearButton.addEventListener('click', () => {
     queryInput.value = '';
     answerOutput.value = '';
-    queryInput.disabled = false;
-    submitButton.disabled = false;
+    clearButton.disabled = true;
 });
 
-// Clear All button click event (clears everything)
 clearAllButton.addEventListener('click', () => {
-    // Reset everything
-    resetQueryState();
+    // Clear all files and reset state
     currentFiles = [];
-    processedFiles = [];
-    statusOutput.value = 'Ready. Upload files and click \'Process\'.';
     fileInput.value = '';
-    processButton.disabled = false;
-    clearButton.disabled = true;
-    answerOutput.value = '';
-    
-    // Reset model selections to their first options
-    if (embeddingModel.options.length > 0) embeddingModel.selectedIndex = 0;
-    if (imageEmbeddingModel.options.length > 0) imageEmbeddingModel.selectedIndex = 0;
-    if (queryingModel.options.length > 0) queryingModel.selectedIndex = 0;
+    queryInput.value = '';
+    answerOutput.value = '';    
+    updateStatus("Ready. Upload files and click 'Process'.", 0, 'info');
+    isReadyForQuery = false;
+    updateFileList([], selectedFilesList, false);
+    updateButtonStates();
 });
 
 // Reset query state
@@ -259,22 +410,37 @@ async function handleQuerySubmit() {
         return;
     }
 
-    answerOutput.value = 'Thinking...';
+    answerOutput.value = 'Searching through documents...';
     submitButton.disabled = true;
     queryInput.disabled = true;
+    updateStatus('Processing query...', 50, 'processing');
 
     try {
         const result = await window.electronAPI.submitQuery(query);
         console.log("Query Result from Main:", result);
 
         if (!result || result.type !== 'query_result') {
-            throw new Error(result.message || 'Invalid response received from backend process.');
+            throw new Error(result?.message || 'Invalid response from query');
         }
 
-        answerOutput.value = result.answer;
+        if (!result.success) {
+            throw new Error(result.message || 'Query processing failed');
+        }
+
+        // Always update answer output with the answer
+        answerOutput.value = result.answer || 'No answer received';
+
+        // If we have sources and chunks info, append them
+        if (result.sources && result.chunks_used) {
+            answerOutput.value += `\n\nSources: ${result.sources.join(', ')}\nBased on ${result.chunks_used} relevant chunks`;
+        }
+
+        // Update status
+        updateStatus(result.message || 'Query processed successfully', 100, 'success');
     } catch (error) {
-        console.error('Error submitting query:', error);
-        answerOutput.value = `Error: Could not connect to backend or query failed.\nDetails: ${error.message}`;
+        console.error('Error processing query:', error);
+        answerOutput.value = `Error: ${error.message}`;
+        updateStatus(`Error: ${error.message}`, 100, 'error'); // Show 100% bar but in error color
     } finally {
         submitButton.disabled = false;
         queryInput.disabled = false;
@@ -294,11 +460,12 @@ queryInput.addEventListener('keypress', (event) => {
 
 // Notification handling
 window.electronAPI.onNotification(({ title, message }) => {
-    const statusOutput = document.getElementById('statusOutput');
-    statusOutput.value = `${title}\n${message}\n\n${statusOutput.value}`;
+    // Update text, keep current progress bar percentage and color by not specifying type or percentage
+    updateStatus(`${title}: ${message}`, -1); 
 });
 
 // Initialize
 resetQueryState();
 clearButton.disabled = true;
 initializeModels();
+updateStatus("Ready. Upload files and click 'Process'.", 0, 'info'); // Initial status
