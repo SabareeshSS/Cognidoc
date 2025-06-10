@@ -1,0 +1,24 @@
+{
+  "name": "cartamind-electron-gui",
+  "version": "1.0.0",
+  "description": "Electron GUI for CartaMind Python backend",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "Electron",
+    "Python",
+    "RAG",
+    "LLM"
+  ],
+  "author": "Sabareesh",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^29.1.4"
+  },
+  "dependencies": {
+    "uuid": "^11.1.0"
+  }
+}

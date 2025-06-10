@@ -1,0 +1,226 @@
+/* --- Base Styles & Variables --- */
+:root {
+    --background-color: #121212; /* Very dark grey (almost black) */
+    --primary-text-color: #E0E0E0; /* Light grey for general text */
+    --accent-green-light: #90EE90; /* Light Green for headings */
+    --accent-green-medium: #3CB371; /* Medium Sea Green for interactive elements */
+    --accent-green-dark: #2E8B57; /* Sea Green for button backgrounds */
+    --accent-green-text: #00FF7F; /* Spring Green for specific text highlights */
+    --disabled-color: #556B2F; /* Dark Olive Green for disabled elements */
+    --panel-background: #1e1e1e; /* Slightly lighter dark grey for panels */
+    --input-background: #2a2a2a; /* Dark grey for inputs */
+    --border-color: var(--accent-green-dark);
+    --shadow-color-light: rgba(0, 255, 127, 0.15); /* Light green shadow */
+    --shadow-color-dark: rgba(0, 0, 0, 0.4); /* Dark shadow */
+
+    /* Using system fonts for better performance and consistency */
+    --main-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif;
+}
+
+body {
+    font-family: var(--main-font);
+    background-color: var(--background-color);
+    color: var(--primary-text-color);
+    margin: 0;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+/* --- Typography --- */
+h1, h2, h3 {
+    color: var(--accent-green-light);
+    margin-top: 0;
+    text-shadow: 1px 1px 3px var(--shadow-color-dark); /* Subtle text shadow */
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 10px;
+    font-size: 2.5em;
+}
+
+p {
+    text-align: center;
+    margin-bottom: 30px;
+    color: var(--primary-text-color);
+}
+
+label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: bold;
+    color: var(--accent-green-light);
+}
+
+/* --- Layout --- */
+.container {
+    display: flex;
+    flex-wrap: wrap; /* Allow panels to wrap on smaller screens */
+    gap: 30px; /* Space between panels */
+    max-width: 1200px;
+    margin: 0 auto; /* Center the container */
+}
+
+.left-panel, .right-panel {
+    background-color: var(--panel-background);
+    padding: 25px;
+    border-radius: 8px;
+    box-shadow: 0 5px 15px var(--shadow-color-light); /* Greenish shadow for depth */
+    flex: 1; /* Each panel tries to take equal space */
+    min-width: 300px; /* Minimum width before wrapping */
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- Forms & Controls --- */
+.form-group {
+    margin-bottom: 20px;
+}
+
+input[type="file"] {
+    display: block;
+    width: calc(100% - 22px); /* Adjust width considering padding/border */
+    padding: 10px;
+    margin-bottom: 15px;
+    background-color: var(--input-background);
+    color: var(--primary-text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    box-shadow: inset 0 1px 3px var(--shadow-color-dark);
+}
+
+/* Style the file input button */
+input[type="file"]::file-selector-button {
+    background-color: var(--accent-green-dark);
+    color: white;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    margin-right: 10px;
+}
+
+input[type="file"]::file-selector-button:hover {
+    background-color: var(--accent-green-medium);
+}
+
+textarea {
+    width: calc(100% - 22px); /* Adjust width considering padding/border */
+    padding: 10px;
+    background-color: var(--input-background);
+    color: var(--accent-green-text); /* Use brighter green for output/input text */
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    resize: vertical; /* Allow vertical resizing */
+    font-family: var(--main-font);
+    box-shadow: inset 0 1px 3px var(--shadow-color-dark);
+    margin-bottom: 15px;
+}
+
+textarea:read-only {
+    background-color: #252525; /* Slightly different background for readonly */
+}
+
+textarea::placeholder {
+    color: #777;
+}
+
+/* --- Buttons --- */
+.button-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.button-group button {
+    flex: 1;
+    min-width: 100px;
+    background-color: var(--accent-green-dark);
+    color: var(--primary-text-color);
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.button-group button:hover {
+    background-color: var(--accent-green-medium);
+}
+
+.button-group button:disabled {
+    background-color: var(--disabled-color);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+button {
+    background-color: var(--accent-green-dark);
+    color: white;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    font-weight: bold;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 3px 6px var(--shadow-color-dark); /* Standard button shadow */
+}
+
+button:hover:not(:disabled) {
+    background-color: var(--accent-green-medium);
+    box-shadow: 0 4px 8px var(--shadow-color-dark); /* Slightly larger shadow on hover */
+}
+
+button:disabled {
+    background-color: var(--disabled-color);
+    cursor: not-allowed;
+    opacity: 0.7;
+    box-shadow: none;
+}
+
+/* --- Model Selector Styles --- */
+.model-selector {
+    margin-bottom: 20px;
+    width: 100%;
+}
+
+.left-panel .model-selector {
+    margin-top: 15px;
+    margin-bottom: 25px;
+}
+
+.right-panel .model-selector {
+    margin-bottom: 20px;
+}
+
+.model-select {
+    width: 100%;
+    padding: 8px 12px;
+    background-color: var(--input-background);
+    color: var(--primary-text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    font-size: 14px;
+    appearance: none;
+    cursor: pointer;
+}
+
+.model-select:focus {
+    outline: none;
+    border-color: var(--accent-green-medium);
+    box-shadow: 0 0 0 2px var(--shadow-color-light);
+}
+
+.model-select:disabled {
+    background-color: var(--disabled-color);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.model-select option {
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+    padding: 8px;
+}
