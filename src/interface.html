@@ -5,12 +5,41 @@
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:5001">
     <meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:5001">
-    <title>CartaMind</title>
+    <title>InquiroAI</title>
     <link rel="stylesheet" href="css/interface.css">
+    <style>
+        @font-face {
+            font-family: 'DisposableDroidBB';
+            src: url('css/DisposableDroidBB.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+        }
+    </style>
 </head>
 <body>
-    <h1>CartaMind</h1>
-    <p>Interact with CartaMind, powered by local LLMs, to get answers about documents or images.</p>
+    <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 10px;">
+        <!-- InquiroAI Custom Logo -->
+        <svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom: 8px;">
+            <defs>
+                <radialGradient id="inquiroai-gradient" cx="50%" cy="50%" r="60%">
+                    <stop offset="0%" stop-color="#90EE90"/>
+                    <stop offset="100%" stop-color="#2E8B57"/>
+                </radialGradient>
+            </defs>
+            <circle cx="40" cy="40" r="36" fill="url(#inquiroai-gradient)" stroke="#00FF7F" stroke-width="3"/>
+            <ellipse cx="40" cy="40" rx="18" ry="28" fill="#121212" stroke="#00FF7F" stroke-width="2"/>
+            <circle cx="40" cy="40" r="10" fill="#00FF7F"/>
+            <path d="M40 18 Q50 40 40 62 Q30 40 40 18 Z" fill="#3CB371" opacity="0.7"/>
+            <circle cx="40" cy="40" r="4" fill="#121212"/>
+        </svg>
+        <h1>InquiroAI</h1>
+    </div>
+    <p style="font-size:1.2em; text-align:center; margin-bottom:32px; color:var(--accent-green-light); max-width: 700px; margin-left:auto; margin-right:auto;">
+        <b>Welcome to InquiroAI!</b><br>
+        Your intelligent assistant for exploring knowledge within your documents and images.<br>
+        <span style="color:var(--accent-green-text);">Upload files, ask questions by text or voice, and receive instant, insightful answers.</span><br>
+        <span style="color:#E0E0E0;">Empowering you to discover, and summarize with your data like never before.</span>
+    </p>
 
     <div class="container">
         <div class="left-panel">
@@ -50,12 +79,26 @@
                 <select id="queryingModel" class="model-select">
                     <!-- Will be populated from models.json -->
                 </select>
-            </div>
-            <label for="queryInput">Ask a Question or Request Summary</label>
-            <textarea id="queryInput" rows="3" placeholder="Upload & Process a file first..." disabled></textarea>
-            <button id="submitButton" disabled>Submit Query</button>
-            <h3>Answer / Summary</h3>
-            <textarea id="answerOutput" rows="12" readonly></textarea>
+            </div>                <div class="query-section">
+                    <div class="query-input-container">
+                        <div class="input-header">
+                            <label for="queryInput">Ask / Request</label>
+                            <button id="micButton" title="Start Voice Input" disabled>🎤</button>
+                        </div>
+                        <div class="input-with-controls">
+                            <textarea id="queryInput" rows="3" placeholder="Upload & Process a file first... (Press Enter to send, Shift+Enter for new line)" disabled></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="answer-section">
+                    <div class="output-header">
+                        <h3>Answer / Summary</h3>
+                        <button id="listenButton" title="Listen to Answer" disabled>🔊</button>
+                    </div>
+                    <div class="answer-container">
+                        <textarea id="answerOutput" rows="12" readonly></textarea>
+                    </div>
+                </div>
             <div class="button-group">
                 <button id="clearButton" disabled>Clear</button>
                 <button id="clearAllButton">Clear All</button>

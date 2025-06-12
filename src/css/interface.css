@@ -17,6 +17,10 @@
     --main-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif;
 }
 
+body, input, textarea, button, select, h1, h2, h3, h4, h5, h6, label, p {
+    font-family: 'DisposableDroidBB', sans-serif;
+}
+
 body {
     font-family: var(--main-font);
     background-color: var(--background-color);
@@ -100,6 +104,7 @@ input[type="file"]::file-selector-button {
     cursor: pointer;
     transition: background-color 0.2s ease;
     margin-right: 10px;
+    font-family: 'DisposableDroidBB', sans-serif;
 }
 
 input[type="file"]::file-selector-button:hover {
@@ -119,13 +124,73 @@ textarea {
     margin-bottom: 15px;
 }
 
-
-textarea:read-only {
-    background-color: #252525; /* Slightly different background for readonly */
+.input-header, .output-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
 }
 
-textarea::placeholder {
-    color: #777;
+.input-header label, .output-header h3 {
+    margin: 0;
+    flex-grow: 1;
+}
+
+#micButton, #listenButton {
+    font-size: 1.2em;
+    padding: 8px;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--accent-green-dark);
+    color: white;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+#micButton:hover, #listenButton:hover {
+    background-color: var(--accent-green-light);
+}
+
+#micButton:disabled, #listenButton:disabled {
+    background-color: var(--disabled-color);
+    cursor: not-allowed;
+}
+
+.input-with-controls {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.input-with-controls textarea {
+    flex-grow: 1;
+    margin-bottom: 0;
+}
+
+.query-input-container textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.query-input-container {
+    margin-bottom: 20px;
+}
+
+.answer-container {
+    position: relative;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.answer-container textarea {
+    width: 100%;
+    margin-bottom: 0;
 }
 
 /* --- Buttons --- */
@@ -318,6 +383,13 @@ button:disabled {
     background-color: var(--input-background);
     border-radius: 3px;
 }
+
+.file-list,
+.file-list ul,
+.file-list li {
+    font-family: 'DisposableDroidBB', sans-serif;
+}
+
 /* --- Status Box --- */
 .status-box {
     background-color: var(--input-background); /* Match input fields for a contained look */
@@ -335,4 +407,14 @@ button:disabled {
 
 .status-box .progress-bar-container {
     margin-bottom: 0; /* The status-box itself has margin-bottom */
+}
+
+#queryInput,
+#answerOutput {
+    font-family: 'DisposableDroidBB', sans-serif;
+}
+
+.status-box,
+#progressText {
+    font-family: 'DisposableDroidBB', sans-serif;
 }

@@ -13,6 +13,8 @@ const embeddingModel = document.getElementById('embeddingModel');
 const imageEmbeddingModel = document.getElementById('imageEmbeddingModel');
 const queryingModel = document.getElementById('queryingModel');
 const selectedFilesList = document.getElementById('selectedFilesList');
+const micButton = document.getElementById('micButton');
+const listenButton = document.getElementById('listenButton');
 
 // Helper function to update the progress bar and status text
 function updateStatus(text, percentage = -1, statusType = 'info') { // statusType: 'info', 'processing', 'success', 'error'
@@ -325,13 +327,14 @@ function updateButtonStates() {
     
     // Update query-related buttons based on processing state
     queryInput.disabled = !isReadyForQuery;
-    submitButton.disabled = !isReadyForQuery;
+    micButton.disabled = !isReadyForQuery; // Manage mic button state
     clearButton.disabled = !isReadyForQuery;
     
     // Update status message if needed
     if (currentFiles.length > 0 && !isProcessing && !isReadyForQuery) {
         updateStatus('Files selected. Choose models if needed, then click Process Documents.', 0, 'info');
     }
+    micButton.textContent = '🎤'; // Reset mic button text/icon
 }
 
 // File input event listener
@@ -375,6 +378,7 @@ clearButton.addEventListener('click', () => {
     queryInput.value = '';
     answerOutput.value = '';
     clearButton.disabled = true;
+    resetAudioState();
 });
 
 clearAllButton.addEventListener('click', () => {
@@ -387,16 +391,60 @@ clearAllButton.addEventListener('click', () => {
     isReadyForQuery = false;
     updateFileList([], selectedFilesList, false);
     updateButtonStates();
+    resetAudioState();
 });
 
 // Reset query state
 function resetQueryState() {
     isReadyForQuery = false;
     queryInput.disabled = true;
-    submitButton.disabled = true;
+    micButton.disabled = true;
     queryInput.value = '';
     queryInput.placeholder = 'Upload & Process files first...';
 }
+
+// Audio player state
+let currentAudioResponse = null;
+let isPlaying = false;
+
+// Listen button click handler
+listenButton.addEventListener('click', () => {
+    if (!currentAudioResponse) {
+        updateStatus('No audio response available', 0, 'error');
+        return;
+    }
+
+    if (isPlaying) {
+        // Stop playing
+        if (window.currentAudioPlayer) {
+            window.currentAudioPlayer.pause();
+            window.currentAudioPlayer = null;
+        }
+        listenButton.textContent = '🔊';
+        isPlaying = false;
+    } else {
+        // Start playing
+        try {
+            window.currentAudioPlayer = new Audio(`file://${currentAudioResponse}`);
+            window.currentAudioPlayer.addEventListener('ended', () => {
+                listenButton.textContent = '🔊';
+                isPlaying = false;
+            });
+            window.currentAudioPlayer.play()
+                .then(() => {
+                    listenButton.textContent = '⏹️';
+                    isPlaying = true;
+                })
+                .catch(error => {
+                    console.error('Error playing audio:', error);
+                    updateStatus('Error playing audio response', 0, 'error');
+                });
+        } catch (error) {
+            console.error('Error creating audio player:', error);
+            updateStatus('Error initializing audio playback', 0, 'error');
+        }
+    }
+});
 
 // Handle query submission
 async function handleQuerySubmit() {
@@ -411,7 +459,6 @@ async function handleQuerySubmit() {
     }
 
     answerOutput.value = 'Searching through documents...';
-    submitButton.disabled = true;
     queryInput.disabled = true;
     updateStatus('Processing query...', 50, 'processing');
 
@@ -427,7 +474,7 @@ async function handleQuerySubmit() {
             throw new Error(result.message || 'Query processing failed');
         }
 
-        // Always update answer output with the answer
+        // Clear the processing message and show the actual answer
         answerOutput.value = result.answer || 'No answer received';
 
         // If we have sources and chunks info, append them
@@ -435,26 +482,42 @@ async function handleQuerySubmit() {
             answerOutput.value += `\n\nSources: ${result.sources.join(', ')}\nBased on ${result.chunks_used} relevant chunks`;
         }
 
-        // Update status
-        updateStatus(result.message || 'Query processed successfully', 100, 'success');
+        // Handle audio response
+        currentAudioResponse = result.audio_response_path;
+        listenButton.disabled = !currentAudioResponse;
+        
+        if (currentAudioResponse) {
+            updateStatus('Query processed. Click 🔊 to hear the response.', 100, 'success');
+        } else {
+            updateStatus('Query processed. No audio response available.', 100, 'success');
+        }
     } catch (error) {
         console.error('Error processing query:', error);
         answerOutput.value = `Error: ${error.message}`;
-        updateStatus(`Error: ${error.message}`, 100, 'error'); // Show 100% bar but in error color
+        updateStatus(`Error: ${error.message}`, 100, 'error');
+        currentAudioResponse = null;
+        listenButton.disabled = true;
     } finally {
-        submitButton.disabled = false;
         queryInput.disabled = false;
     }
 }
 
-// Submit button click event
-submitButton.addEventListener('click', handleQuerySubmit);
-
-// Query input keypress event
-queryInput.addEventListener('keypress', (event) => {
+// Handle query submission on Enter key
+queryInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
+        if (!isReadyForQuery) {
+            updateStatus('Please process files before asking questions.', 0, 'error');
+            return;
+        }
+        // Show processing state
+        answerOutput.value = 'Processing your question...';
+        queryInput.disabled = true;
+        updateStatus('Processing query...', 50, 'processing');
         handleQuerySubmit();
+    } else if (event.key === 'Enter' && event.shiftKey) {
+        // Allow Shift+Enter for new lines
+        return true;
     }
 });
 
@@ -469,3 +532,92 @@ resetQueryState();
 clearButton.disabled = true;
 initializeModels();
 updateStatus("Ready. Upload files and click 'Process'.", 0, 'info'); // Initial status
+
+// --- Voice Input Logic ---
+let mediaRecorder;
+let audioChunks = [];
+let isRecording = false;
+
+micButton.addEventListener('click', async () => {
+    if (!isReadyForQuery) {
+        updateStatus('Please process files before using voice input.', 0, 'error');
+        return;
+    }
+
+    if (isRecording) {
+        // Stop recording
+        mediaRecorder.stop();
+        micButton.textContent = '🎤';
+        micButton.title = 'Start Voice Input';
+        updateStatus('Processing voice input...', 0, 'processing');
+        isRecording = false;
+    } else {
+        // Start recording
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                audioChunks = []; // Clear chunks for next recording
+                queryInput.disabled = true; // Disable input while processing
+
+                try {
+                    updateStatus('Transcribing audio...', 25, 'processing');
+                    const result = await window.electronAPI.transcribeAudio(await audioBlob.arrayBuffer());
+                    
+                    if (!result || result.type === 'error') {
+                        throw new Error(result?.message || 'Transcription failed');
+                    }
+
+                    if (result.type === 'transcription_result' && result.text) {
+                        queryInput.value = result.text;
+                        answerOutput.value = 'Processing your question...';
+                        updateStatus('Transcription complete. Processing query...', 75, 'processing');
+                        
+                        // Automatically submit the transcribed query
+                        const queryResult = await window.electronAPI.submitQuery(result.text);
+                        if (queryResult && queryResult.type === 'query_result') {
+                            answerOutput.value = queryResult.answer || 'No answer received';
+                            
+                            // Add sources if available
+                            if (queryResult.sources && queryResult.chunks_used) {
+                                answerOutput.value += `\n\nSources: ${queryResult.sources.join(', ')}\nBased on ${queryResult.chunks_used} relevant chunks`;
+                            }
+                            
+                            updateStatus('Query processed successfully', 100, 'success');
+                            
+                            // Handle audio response
+                            currentAudioResponse = queryResult.audio_response_path;
+                            listenButton.disabled = !currentAudioResponse;
+                        } else {
+                            throw new Error(queryResult?.message || 'Failed to process query');
+                        }
+                    } else {
+                        throw new Error('Transcription produced no text');
+                    }
+                } catch (error) {
+                    console.error('Error processing voice input:', error);
+                    updateStatus(`Error: ${error.message}`, 100, 'error');
+                } finally {
+                    // Clean up the stream tracks
+                    stream.getTracks().forEach(track => track.stop());
+                }
+            };
+
+            mediaRecorder.start();
+            micButton.textContent = '🛑'; // Stop icon
+            micButton.title = 'Stop Voice Input';
+            updateStatus('Recording... Click 🛑 to stop.', 0, 'info');
+            isRecording = true;
+        } catch (error) {
+            console.error('Error accessing microphone:', error);
+            updateStatus(`Mic access error: ${error.message}`, 0, 'error');
+        }
+    }
+});

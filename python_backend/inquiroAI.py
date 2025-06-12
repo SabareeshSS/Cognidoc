@@ -1,5 +1,5 @@
 """
-CartaMind - Document Processing and Question Answering System
+InquiroAI - Document Processing and Question Answering System
 ==========================================================
 
 This module provides functionality for processing various types of documents (PDF, TXT, DOCX, images)
@@ -26,6 +26,28 @@ import time
 import logging
 import tempfile
 from typing import List, Dict, Optional, Any, Tuple, Union
+import pyttsx3 # For Text-to-Speech
+import whisper
+import asyncio
+from typing import Dict, Any, Optional
+
+# Global variables
+stt_model = None  # For Whisper model
+
+def initialize_stt_model():
+    """Initialize the Whisper speech-to-text model."""
+    global stt_model
+    if stt_model is None:
+        try:
+            logger.info("Loading Whisper STT model (this may take a moment on first run)...")
+            stt_model = whisper.load_model("base")  # "base" is a good balance of accuracy and speed
+            logger.info("Whisper STT model loaded successfully")
+            return stt_model
+        except Exception as e:
+            logger.error(f"Error loading Whisper model: {e}", exc_info=True)
+            return None
+    return stt_model
+
 from concurrent.futures import ThreadPoolExecutor
 
 import chromadb
@@ -41,7 +63,7 @@ from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStoreRetriever
 
 def get_user_config_dir() -> str:
-    """Get the user's configuration directory for CartaMind."""
+    """Get the user's configuration directory for InquiroAI."""
     if sys.platform == 'win32':
         documents_dir = os.path.join(os.path.expanduser('~'), 'Documents')
     elif sys.platform == 'darwin':  # macOS
@@ -49,7 +71,7 @@ def get_user_config_dir() -> str:
     else:  # Linux and other Unix-like
         documents_dir = os.path.join(os.path.expanduser('~'), 'Documents')
     
-    config_dir = os.path.join(documents_dir, 'CartaMind')
+    config_dir = os.path.join(documents_dir, 'InquiroAI')
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
@@ -66,8 +88,8 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = get_user_config_dir()
 MODELS_JSON_PATH = os.path.join(CONFIG_DIR, 'models.json')
-CHROMA_PERSIST_DIR = os.path.join(SCRIPT_DIR, "chroma_db_electron")
-COLLECTION_NAME = "cartamind_collection_v1"
+CHROMA_PERSIST_DIR = os.path.join(CONFIG_DIR, "chroma_db_electron")
+COLLECTION_NAME = "inquiroai_collection_v1"
 
 # Processing Configuration
 CHUNK_SIZE = 500  # Size of text chunks for splitting documents
@@ -124,6 +146,7 @@ except Exception as e:
 current_embedding_model: str = TEXT_EMBEDDING_MODEL
 current_image_embedding_model: str = IMAGE_EMBEDDING_MODEL
 current_querying_model: str = LLM_MODEL
+stt_model = None # For Whisper STT model
 
 # Async libraries
 import asyncio
@@ -192,18 +215,17 @@ def get_available_models() -> List[str]:
         Models are now organized by categories in models.json under model_categories
     """
     try:
-        models_file = os.path.join(SCRIPT_DIR, "models.json")
-        if not os.path.exists(models_file):
-            logger.warning("models.json not found, using default model list")
+        if not os.path.exists(MODELS_JSON_PATH):
+            logger.warning(f"models.json not found at {MODELS_JSON_PATH}, using default model list")
             default_models = ["llava-llama3:8b-v1.1-q4_0"]
             send_response({
                 "type": "models_list",
                 "models": default_models,
-                "message": "Using default model list (models.json not found)"
+                "message": "Using default model list (models.json not found in user config directory)"
             })
             return default_models
 
-        with open(models_file, 'r') as f:
+        with open(MODELS_JSON_PATH, 'r') as f:
             models_data = json.load(f)
             
         # Extract all models from the model_categories
@@ -380,9 +402,8 @@ def get_models_by_category(category: str) -> List[str]:
         List[str]: List of model names for the specified category
     """
     try:
-        models_file = os.path.join(SCRIPT_DIR, "models.json")
-        if not os.path.exists(models_file):
-            logger.warning(f"models.json not found at {models_file}, using default models")
+        if not os.path.exists(MODELS_JSON_PATH):
+            logger.warning(f"models.json not found at {MODELS_JSON_PATH}, using default models")
             if category == "querying_models":
                 return ["llava-llama3:8b-v1.1-q4_0"]
             elif category == "image_embedding_models":
@@ -390,8 +411,8 @@ def get_models_by_category(category: str) -> List[str]:
             else:  # text_embedding_models
                 return ["all-minilm:latest"]
 
-        # Read and parse models.json
-        with open(models_file, 'r') as f:
+        # Read and parse models.json from user's config directory
+        with open(MODELS_JSON_PATH, 'r') as f:
             models_data = json.load(f)
             
         categories = models_data.get('model_categories', {})
@@ -1088,16 +1109,19 @@ async def process_query(query_text: str, collection_name: str = COLLECTION_NAME)
         # Get collection and ensure it has documents
         collection = initialize_chroma_client()
         if collection.count() == 0:
+            no_docs_message = "No documents have been processed yet. Please process documents first."
+            audio_path = text_to_speech(no_docs_message)
             return {
                 "type": "query_result",
                 "success": False,
-                "message": "No documents have been processed yet. Please process documents first.",
+                "message": no_docs_message,
                 "answer": None,
                 "sources": [],
-                "chunks_used": 0
+                "chunks_used": 0,
+                "audio_response_path": audio_path
             }
         
-        # Initialize embeddings with current model
+        # Initialize query embeddings
         embeddings = OllamaEmbeddings(model=current_embedding_model)
         query_embedding = await embeddings.aembed_query(query_text)
         
@@ -1108,54 +1132,142 @@ async def process_query(query_text: str, collection_name: str = COLLECTION_NAME)
             include=['documents', 'metadatas']
         )
         
-        if not results or not results['documents'] or not results['documents'][0]:
+        if not results or not results['documents']:
+            no_results_message = "No relevant context found in the processed documents."
+            audio_path = text_to_speech(no_results_message)
             return {
                 "type": "query_result",
                 "success": False,
-                "message": "No relevant context found in the processed documents.",
+                "message": no_results_message,
                 "answer": None,
                 "sources": [],
-                "chunks_used": 0
+                "chunks_used": 0,
+                "audio_response_path": audio_path
             }
-        # Prepare context from retrieved documents
-        context = "\n".join(results['documents'][0])
+            
+        # Build context from chunks with safer metadata handling
+        contexts = []
+        sources = set()
+        for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
+            # Handle potential None metadata or missing source field
+            source = "Unknown Source"
+            if meta and isinstance(meta, dict) and 'source' in meta:
+                source = os.path.basename(meta['source'])
+            sources.add(source)
+            contexts.append(f"From {source}:\n{doc}")
         
-        # Query LLM with context
-        llm_model = LLM_MODEL or "llama2:13b"
-        prompt = f"""Based on the following context, please answer the question. If the answer cannot be determined from the context, say so.
+        context = "\n\n".join(contexts)
+        
+        # Format prompt with specific instruction to use only provided context
+        prompt = f"""Using *only* the context provided below, answer the question.  
+If the answer cannot be determined from the context, say so.
 
-Context:
+Context:  
 {context}
 
 Question: {query_text}
 
 Answer:"""
 
-        response = ollama.chat(
-            model=llm_model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        answer = response['message']['content']
+        # Get answer from LLM using chat API with error handling
+        try:
+            if not current_querying_model:
+                raise ValueError("No querying model selected")
+                
+            response = ollama.chat(
+                model=current_querying_model,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            logger.debug(f"Raw LLM response: {response}")
+            
+            # Extract content from the response, handling different response formats
+            answer = None
+            if hasattr(response, 'message'):
+                # Object-style response
+                if hasattr(response.message, 'content'):
+                    answer = response.message.content
+                elif isinstance(response.message, dict) and 'content' in response.message:
+                    answer = response.message['content']
+            elif isinstance(response, dict):
+                # Dictionary-style response
+                message = response.get('message')
+                if isinstance(message, dict):
+                    answer = message.get('content')
+                elif hasattr(message, 'content'):
+                    answer = message.content
+            
+            if not answer:
+                logger.error(f"Could not extract answer from response: {response}")
+                raise ValueError("No valid answer content in LLM response")
+                
+        except Exception as llm_error:
+            error_message = f"Error getting answer from LLM: {str(llm_error)}"
+            logger.error(error_message, exc_info=True)
+            audio_path = text_to_speech(error_message)
+            return {
+                "type": "query_result",
+                "success": False,
+                "message": error_message,
+                "answer": None,
+                "sources": list(sources),
+                "chunks_used": len(contexts),
+                "audio_response_path": audio_path
+            }
         
-        return {
+        # Generate audio response with retry logic
+        audio_path = None
+        max_retries = 3
+        retry_delay = 1  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                audio_path = text_to_speech(answer)
+                if audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+            except Exception as e:
+                logger.warning(f"TTS attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error("All TTS attempts failed")
+        
+        result = {
             "type": "query_result",
             "success": True,
             "message": "Query processed successfully",
             "answer": answer,
-            "request_id": None
+            "sources": list(sources),
+            "chunks_used": len(contexts),
+            "audio_response_path": audio_path
         }
         
+        # Log if audio wasn't generated
+        if not audio_path:
+            logger.warning("Audio response not available for successful query")
+            
+        return result
+        
     except Exception as e:
+        error_message = f"Error processing query: {str(e)}"
+        try:
+            audio_path = text_to_speech(error_message)
+        except Exception as tts_error:
+            logger.error(f"Failed to create audio for error message: {tts_error}")
+            audio_path = None
+            
         logger.error(f"Error processing query: {e}", exc_info=True)
         return {
             "type": "query_result",
             "success": False,
-            "message": f"Error processing query: {str(e)}",
+            "message": error_message,
             "answer": None,
-            "request_id": None
+            "sources": [],
+            "chunks_used": 0,
+            "audio_response_path": audio_path
         }
-
 # --- Main Request Handler ---
 def handle_request(request_data: Dict[str, Any]) -> Dict[str, Any]:
     """Main request handler with async support."""
@@ -1378,7 +1490,7 @@ async def handle_command(command_data: Dict[str, Any]):
             return result
                 
         elif command == 'query':
-            query_text = command_data.get('query_text')
+            query_text = command_data.get('query_text') or command_data.get('query')  # Support both formats
             if not query_text:
                 return {
                     'type': 'error',
@@ -1386,8 +1498,10 @@ async def handle_command(command_data: Dict[str, Any]):
                     'request_id': request_id
                 }
 
+            logger.info(f"Processing query: '{query_text}'")
             result = await process_query(query_text)
             result['request_id'] = request_id
+            logger.info(f"Query result: {result}")
             return result
             
         elif command == 'get_models':
@@ -1445,6 +1559,15 @@ async def handle_command(command_data: Dict[str, Any]):
                     'message': error_msg,
                     'request_id': request_id
                 }
+        
+        elif command == 'transcribe_audio':
+            audio_path = command_data.get('audio_path')
+            if not audio_path:
+                return {'type': 'error', 'message': 'No audio path provided for transcription', 'request_id': request_id}
+            
+            result = await speech_to_text_async(audio_path)
+            result['request_id'] = request_id
+            return result
             
         else:
             logger.warning(f"Unknown command received: {command}")
@@ -1460,6 +1583,106 @@ async def handle_command(command_data: Dict[str, Any]):
             'message': f'Command processing error: {str(e)}',
             'request_id': request_id
         }
+
+def text_to_speech(text_to_speak: str) -> Optional[str]:
+    """
+    Converts text to speech using pyttsx3 and saves it as a temporary WAV file.
+    Returns the path to the audio file, or None if failed.
+    """
+    logger.info(f"TTS: Attempting to speak: '{text_to_speak[:100]}...'")
+    if not text_to_speak or not text_to_speak.strip():
+        logger.warning("TTS: No text provided to speak.")
+        return None
+
+    output_filepath = None
+    engine = None
+    try:
+        # Initialize the TTS engine
+        engine = pyttsx3.init()
+        
+        # Optional: Configure voice properties for better quality
+        engine.setProperty('rate', 150)  # Speed of speech
+        engine.setProperty('volume', 0.9)  # Volume level
+        
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio_file:
+            output_filepath = temp_audio_file.name
+        
+        logger.info(f"TTS: Saving speech to temporary file: {output_filepath}")
+        engine.save_to_file(text_to_speak, output_filepath)
+        engine.runAndWait()
+
+        # Verify the file was created successfully
+        if os.path.exists(output_filepath) and os.path.getsize(output_filepath) > 0:
+            logger.info(f"TTS: Speech successfully saved to {output_filepath}")
+            return output_filepath
+        else:
+            logger.error(f"TTS: Failed to create speech file or file is empty: {output_filepath}")
+            if os.path.exists(output_filepath):
+                os.remove(output_filepath)
+            return None
+
+    except Exception as e:
+        logger.error(f"TTS: Error during text-to-speech conversion: {e}", exc_info=True)
+        # Clean up the temporary file if it exists
+        if output_filepath and os.path.exists(output_filepath):
+            try:
+                os.remove(output_filepath)
+            except Exception as cleanup_error:
+                logger.warning(f"TTS: Failed to clean up temporary file: {cleanup_error}")
+        return None
+
+    finally:
+        # Always try to properly stop the TTS engine
+        if engine:
+            try:
+                engine.stop()
+            except Exception as stop_error:
+                logger.warning(f"TTS: Error stopping TTS engine: {stop_error}")
+
+def initialize_stt_model(model_name="base"):
+    """Initializes the Whisper STT model if not already loaded."""
+    global stt_model
+    if stt_model is None:
+        logger.info(f"Loading Whisper STT model ({model_name}). This might take a moment...")
+        try:
+            stt_model = whisper.load_model(model_name)
+            logger.info("Whisper STT model loaded successfully.")
+        except Exception as e:
+            logger.error(f"Error loading Whisper STT model: {e}", exc_info=True)
+            stt_model = None # Ensure it's None if loading failed
+    return stt_model
+
+async def speech_to_text_async(audio_filepath: str) -> Dict[str, Any]:
+    """
+    Transcribes audio from a file path using Whisper.
+    Runs the synchronous whisper.transcribe in a thread pool executor.
+    Returns a dictionary with type and either text or error message.
+    """
+    model = initialize_stt_model()  # Ensure model is loaded
+    if not model:
+        return {"type": "error", "message": "Speech-to-text model is not available."}
+
+    if not os.path.exists(audio_filepath):
+        logger.error(f"Audio file not found for STT: {audio_filepath}")
+        return {"type": "error", "message": f"Audio file not found at path: {audio_filepath}"}
+
+    try:
+        logger.info(f"Starting transcription for audio file: {audio_filepath}")
+        loop = asyncio.get_event_loop()
+        # Whisper's transcribe is CPU-bound, so run_in_executor is appropriate
+        # Pass options as part of the second argument
+        result = await loop.run_in_executor(None, lambda: model.transcribe(audio_filepath, fp16=False))
+        transcribed_text = result.get("text", "")
+        
+        if not transcribed_text:
+            return {"type": "error", "message": "Transcription produced no text"}
+            
+        logger.info(f"Transcription successful. Text (first 100 chars): '{transcribed_text[:100]}...'")
+        return {"type": "transcription_result", "text": transcribed_text.strip()}
+    except Exception as e:
+        logger.error(f"Error during speech transcription for {audio_filepath}: {e}", exc_info=True)
+        return {"type": "error", "message": f"Transcription failed: {str(e)}"}
 
 def main_loop():
     """Main loop to handle requests from Electron."""
@@ -1607,24 +1830,28 @@ async def load_multiple_documents_from_files(file_paths: List[str], chunk_size: 
 async def process_query(query_text: str) -> Dict[str, Any]:
     """
     Process a query using RAG approach with context from all available document chunks.
+    Generates both text and audio responses.
     
     Args:
         query_text: The user's question or 'summarize' request
         
     Returns:
-        Dict containing answer and metadata about sources used
+        Dict containing answer, audio response path, and metadata about sources used
     """
     try:
         # Get collection and ensure it has documents
         collection = initialize_chroma_client()
         if collection.count() == 0:
+            no_docs_message = "No documents have been processed yet. Please process documents first."
+            audio_path = text_to_speech(no_docs_message)
             return {
                 "type": "query_result",
                 "success": False,
-                "message": "No documents have been processed yet. Please process documents first.",
+                "message": no_docs_message,
                 "answer": None,
                 "sources": [],
-                "chunks_used": 0
+                "chunks_used": 0,
+                "audio_response_path": audio_path
             }
         
         # Initialize query embeddings
@@ -1639,20 +1866,26 @@ async def process_query(query_text: str) -> Dict[str, Any]:
         )
         
         if not results or not results['documents']:
+            no_results_message = "No relevant context found in the processed documents."
+            audio_path = text_to_speech(no_results_message)
             return {
                 "type": "query_result",
                 "success": False,
-                "message": "No relevant context found in the processed documents.",
+                "message": no_results_message,
                 "answer": None,
                 "sources": [],
-                "chunks_used": 0
+                "chunks_used": 0,
+                "audio_response_path": audio_path
             }
             
-        # Build context from chunks
+        # Build context from chunks with safer metadata handling
         contexts = []
         sources = set()
         for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
-            source = os.path.basename(meta['source'])
+            # Handle potential None metadata or missing source field
+            source = "Unknown Source"
+            if meta and isinstance(meta, dict) and 'source' in meta:
+                source = os.path.basename(meta['source'])
             sources.add(source)
             contexts.append(f"From {source}:\n{doc}")
         
@@ -1669,226 +1902,102 @@ Question: {query_text}
 
 Answer:"""
 
-        # Get answer from LLM using chat API
-        response = ollama.chat(
-            model=current_querying_model,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        # Get answer from LLM using chat API with error handling
+        try:
+            if not current_querying_model:
+                raise ValueError("No querying model selected")
+                
+            response = ollama.chat(
+                model=current_querying_model,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            logger.debug(f"Raw LLM response: {response}")
+            
+            # Extract content from the response, handling different response formats
+            answer = None
+            if hasattr(response, 'message'):
+                # Object-style response
+                if hasattr(response.message, 'content'):
+                    answer = response.message.content
+                elif isinstance(response.message, dict) and 'content' in response.message:
+                    answer = response.message['content']
+            elif isinstance(response, dict):
+                # Dictionary-style response
+                message = response.get('message')
+                if isinstance(message, dict):
+                    answer = message.get('content')
+                elif hasattr(message, 'content'):
+                    answer = message.content
+            
+            if not answer:
+                logger.error(f"Could not extract answer from response: {response}")
+                raise ValueError("No valid answer content in LLM response")
+                
+        except Exception as llm_error:
+            error_message = f"Error getting answer from LLM: {str(llm_error)}"
+            logger.error(error_message, exc_info=True)
+            audio_path = text_to_speech(error_message)
+            return {
+                "type": "query_result",
+                "success": False,
+                "message": error_message,
+                "answer": None,
+                "sources": list(sources),
+                "chunks_used": len(contexts),
+                "audio_response_path": audio_path
+            }
         
-        answer = response['message']['content']
+        # Generate audio response with retry logic
+        audio_path = None
+        max_retries = 3
+        retry_delay = 1  # seconds
         
-        return {
+        for attempt in range(max_retries):
+            try:
+                audio_path = text_to_speech(answer)
+                if audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+            except Exception as e:
+                logger.warning(f"TTS attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error("All TTS attempts failed")
+        
+        result = {
             "type": "query_result",
             "success": True,
             "message": "Query processed successfully",
             "answer": answer,
             "sources": list(sources),
-            "chunks_used": len(contexts)
+            "chunks_used": len(contexts),
+            "audio_response_path": audio_path
         }
         
+        # Log if audio wasn't generated
+        if not audio_path:
+            logger.warning("Audio response not available for successful query")
+            
+        return result
+        
     except Exception as e:
+        error_message = f"Error processing query: {str(e)}"
+        try:
+            audio_path = text_to_speech(error_message)
+        except Exception as tts_error:
+            logger.error(f"Failed to create audio for error message: {tts_error}")
+            audio_path = None
+            
         logger.error(f"Error processing query: {e}", exc_info=True)
         return {
             "type": "query_result",
             "success": False,
-            "message": f"Error processing query: {str(e)}",
+            "message": error_message,
             "answer": None,
             "sources": [],
-            "chunks_used": 0
-        }
-
-async def handle_query_command(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle the query command from the frontend."""
-    try:
-        query = data.get('query')
-        if not query:
-            return {
-                'type': 'error',
-                'message': 'No query provided'
-            }
-            
-        # Process the query
-        result = await process_query(query)
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error handling query command: {e}", exc_info=True)
-        return {
-            'type': 'error',
-            'message': f'Error processing query: {str(e)}'
-        }
-
-async def handle_command(data: Dict[str, Any]) -> None:
-    """Handle incoming commands from the frontend."""
-    try:
-        command = data.get('command')
-        if not command:
-            raise ValueError("No command specified")
-            
-        response = None
-        
-        if command == 'get_models':
-            category = data.get('category')
-            if not category:
-                raise ValueError("No category specified for get_models command")
-            response = {'type': 'models_list', 'models': get_models_by_category(category)}
-            
-        elif command == 'process_files':
-            file_paths = data.get('file_paths', [])
-            if not file_paths:
-                raise ValueError("No file paths provided for processing")
-            response = await process_files(file_paths)
-            
-        elif command == 'query':
-            response = await handle_query_command(data)
-            
-        else:
-            raise ValueError(f"Unknown command: {command}")
-            
-        if response:
-            send_response(response)
-            
-    except Exception as e:
-        logger.error(f"Error handling command: {e}", exc_info=True)
-        send_response({
-            'type': 'error',
-            'message': f'Command processing error: {str(e)}'
-        })
-
-async def process_files(file_paths: List[str]) -> Dict[str, Any]:
-    """
-    Process multiple files and store their embeddings in the vector store.
-    
-    Args:
-        file_paths: List of file paths to process
-        
-    Returns:
-        Dict with processing status and message
-    """
-    try:
-        logger.info(f"Processing files: {file_paths}")
-        
-        # Validate file paths
-        valid_paths = []
-        for path in file_paths:
-            if os.path.exists(path):
-                valid_paths.append(path)
-            else:
-                logger.warning(f"File not found: {path}")
-                
-        if not valid_paths:
-            return {
-                "type": "processing_status",
-                "success": False,
-                "message": "No valid files found at the provided paths."
-            }
-        
-        # Initialize ChromaDB client
-        client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-        
-        try:
-            collection = client.get_collection(COLLECTION_NAME)
-            logger.info("Got existing collection")
-        except:
-            collection = client.create_collection(COLLECTION_NAME)
-            logger.info("Created new collection")
-            
-        # Initialize embeddings model
-        try:
-            embed_model = OllamaEmbeddings(
-                model=current_embedding_model or TEXT_EMBEDDING_MODEL or "all-minilm"
-            )
-            logger.info(f"Initialized embedding model: {embed_model.model}")
-        except Exception as e:
-            logger.error(f"Failed to initialize embedding model: {e}")
-            return {
-                "type": "processing_status",
-                "success": False,
-                "message": f"Failed to initialize embedding model: {str(e)}"
-            }
-            
-        # Load and split documents
-        all_chunks = await load_multiple_documents_from_files(valid_paths)
-        if not all_chunks:
-            return {
-                "type": "processing_status",
-                "success": False,
-                "message": "No valid content found in the provided files."
-            }
-            
-        # Generate embeddings asynchronously
-        embeddings = []
-        ids = []
-        texts = []
-        
-        # Process chunks in batches
-        batch_size = 10
-        total_chunks = len(all_chunks)
-        processed = 0
-        
-        for i in range(0, total_chunks, batch_size):
-            batch = all_chunks[i:i + batch_size]
-            batch_embeddings = []
-            
-            try:
-                # Generate embeddings for batch
-                for chunk in batch:
-                    try:
-                        embedding = await generate_embedding(chunk.page_content, embed_model)
-                        batch_embeddings.append((chunk, embedding))
-                    except Exception as e:
-                        logger.error(f"Failed to generate embedding for chunk: {e}")
-                        continue
-                
-                # Add successful embeddings to lists
-                for chunk, embedding in batch_embeddings:
-                    embeddings.append(embedding)
-                    ids.append(f"doc_{uuid.uuid4()}")
-                    texts.append(chunk.page_content)
-                
-                processed += len(batch_embeddings)
-                logger.info(f"Processed {processed}/{total_chunks} chunks")
-                
-            except Exception as batch_error:
-                logger.error(f"Error processing batch: {batch_error}")
-                continue
-        
-        if not embeddings:
-            return {
-                "type": "processing_status",
-                "success": False,
-                "message": "Failed to generate any valid embeddings."
-            }
-            
-        try:
-            # Add to collection
-            collection.add(
-                embeddings=embeddings,
-                documents=texts,
-                ids=ids
-            )
-            
-            message = f"Successfully processed {len(valid_paths)} files.\n"
-            message += f"Generated embeddings for {len(embeddings)} chunks."
-            
-            return {
-                "type": "processing_status",
-                "success": True,
-                "message": message
-            }
-            
-        except Exception as add_error:
-            logger.error(f"Failed to add embeddings to collection: {add_error}")
-            return {
-                "type": "processing_status",
-                "success": False,
-                "message": f"Failed to store embeddings: {str(add_error)}"
-            }
-        
-    except Exception as e:
-        logger.error(f"Error processing files: {e}", exc_info=True)
-        return {
-            "type": "processing_status",
-            "success": False,
-            "message": f"Error processing files: {str(e)}"
+            "chunks_used": 0,
+            "audio_response_path": audio_path
         }

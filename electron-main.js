@@ -2,8 +2,10 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
-const { v4: uuidv4 } = require('uuid'); // For request IDs
-const fs = require('fs'); // <-- Add this
+const { v4: uuidv4 } = require('uuid');
+const fs = require('fs'); // For synchronous file operations like existsSync, copyFileSync
+const fsPromises = require('fs').promises; // For asynchronous file operations
+const os = require('os'); // For temporary directory
 
 let mainWindow;
 let pythonProcess = null;
@@ -14,12 +16,14 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1000, // Example width
         height: 800, // Example height
+        icon: path.join(__dirname, 'src/assets/inquiroai.png'), // or .png
         webPreferences: {
             preload: path.join(__dirname, 'src/js/preload.js'),
             contextIsolation: true, // Recommended for security
             nodeIntegration: false, // Keep false
         },
     });
+    mainWindow.setMenu(null); // Remove the default menu bar
     console.log("Main window created."); // <-- Add log
 
     mainWindow.loadFile(path.join(__dirname, 'src/interface.html'));
@@ -36,9 +40,11 @@ function startPythonBackend() {
             console.log('Python backend already running');
             return;
         }
-
+        // ORIGINAL to use the default python executable on the system
         const pythonExecutable = process.platform === 'win32' ? 'python' : 'python3';
-        const scriptPath = path.join(__dirname, 'python_backend/cartamind1.0.py');
+        // Use the specified Python executable path
+        // const pythonExecutable = 'D:/Python/env3.12/Scripts/python.exe';
+        const scriptPath = path.join(__dirname, 'python_backend/inquiroAI.py');
     
         // Ensure the script exists
         if (!fs.existsSync(scriptPath)) {
@@ -54,56 +60,7 @@ function startPythonBackend() {
             stdio: ['pipe', 'pipe', 'pipe']
         });
 
-        // Handle Python process stdout
-        pythonProcess.stdout.on('data', (data) => {
-            try {
-                const lines = data.toString().trim().split('\n');
-                lines.forEach(line => {
-                    if (!line.trim()) return;
-                    
-                    const response = JSON.parse(line);
-                    console.log('Python response:', response);
-                    
-                    const requestId = response.request_id;
-                    if (requestId && pendingRequests.has(requestId)) {
-                        const { resolve } = pendingRequests.get(requestId);
-                        pendingRequests.delete(requestId);
-                        resolve(response);
-                    }
-                });
-            } catch (e) {
-                console.error('Error processing Python output:', e);
-            }
-        });
-
-        // Handle Python process stderr
-        pythonProcess.stderr.on('data', (data) => {
-            console.error(`Python stderr: ${data}`);
-        });
-
-        // Handle Python process errors
-        pythonProcess.on('error', (err) => {
-            console.error('Failed to start Python process:', err);
-            dialog.showErrorBox('Backend Error', 
-                `Failed to start Python backend:\n${err.message}\n` +
-                'Please ensure Python is installed and in your PATH.');
-        });
-
-        // Handle Python process exit
-        pythonProcess.on('close', (code) => {
-            console.log(`Python backend exited with code ${code}`);
-            pythonProcess = null;
-        });
-
-    } catch (error) {
-        console.error('Error in startPythonBackend:', error);
-        dialog.showErrorBox('Backend Error', 
-            `Failed to start Python backend:\n${error.message}\n` +
-            'Please ensure Python is installed and the script exists.');
-        throw error;
-    }
-
-    // Handle Python process stdout
+    // Consolidated Python process event handlers
     pythonProcess.stdout.on('data', (data) => {
         const lines = data.toString().trim().split('\n');
         lines.forEach(line => {
@@ -183,6 +140,14 @@ function startPythonBackend() {
         
         pythonProcess = null;
     });
+
+    } catch (error) { // Catch errors from the spawn process itself or initial setup
+        console.error('Error in startPythonBackend:', error);
+        dialog.showErrorBox('Backend Error', 
+            `Failed to start Python backend:\n${error.message}\n` +
+            'Please ensure Python is installed and the script exists.');
+        throw error; // Re-throw if you want app startup to halt or be handled further up
+    }
 } // <-- End of startPythonBackend function
 
 app.whenReady().then(() => {
@@ -198,29 +163,26 @@ app.whenReady().then(() => {
     });
 });
 
-// Helper function to check and initialize models.json
+// Helper function to check and ensure models.json directory exists
 async function checkModelsConfig() {
     const documentsPath = app.getPath('documents');
-    const configDir = path.join(documentsPath, 'CartaMind');
+    const configDir = path.join(documentsPath, 'InquiroAI');
     const modelsPath = path.join(configDir, 'models.json');
 
-    if (!fs.existsSync(modelsPath)) {
-        // Create CartaMind directory in Documents if it doesn't exist
-        if (!fs.existsSync(configDir)) {
-            fs.mkdirSync(configDir, { recursive: true });
-        }
+    // Create InquiroAI directory in Documents if it doesn't exist
+    if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+    }
 
-        // Copy default models.json if it doesn't exist in user's Documents
-        const sourceModelsPath = path.join(__dirname, 'python_backend', 'models.json');
-        if (fs.existsSync(sourceModelsPath)) {
-            fs.copyFileSync(sourceModelsPath, modelsPath);
-            if (mainWindow) {
-                mainWindow.webContents.send('show-notification', {
-                    title: 'Configuration Created',
-                    message: `Models configuration file created at:\n${modelsPath}\nYou can customize the available models by editing this file.`
-                });
-            }
+    // If models.json doesn't exist, show a notification to the user
+    if (!fs.existsSync(modelsPath)) {
+        if (mainWindow) {
+            mainWindow.webContents.send('show-notification', {
+                title: 'Configuration Required',
+                message: `Please create a models.json file at:\n${modelsPath}\nThis file is required for configuring the available models.`
+            });
         }
+        console.log(`Models configuration file needed at: ${modelsPath}`);
     }
 }
 
@@ -322,7 +284,7 @@ ipcMain.handle('get-models', async () => {
 ipcMain.handle('get-models-by-category', async (event, category) => {
     console.log(`Handling get-models-by-category request for: ${category}`);
     try {
-        const modelsPath = path.join(app.getPath('documents'), 'CartaMind', 'models.json');
+        const modelsPath = path.join(app.getPath('documents'), 'InquiroAI', 'models.json');
         console.log(`Reading models from: ${modelsPath}`);
         
         if (!fs.existsSync(modelsPath)) {
@@ -407,6 +369,113 @@ ipcMain.handle('process-files', async (event, filePaths) => {
     } catch (error) {
         console.error('Error processing files:', error);
         throw error;
+    }
+});
+
+// Handle 'transcribe-audio' request from renderer
+ipcMain.handle('transcribe-audio', async (event, audioArrayBuffer) => {
+    if (!pythonProcess) {
+        return { type: 'error', message: 'Python backend process is not running.' };
+    }
+
+    const audioBuffer = Buffer.from(audioArrayBuffer);
+    let tempFilePath = '';
+    const requestId = uuidv4();
+
+    try {
+        const tempDir = path.join(app.getPath('userData'), 'temp_audio');
+        await fsPromises.mkdir(tempDir, { recursive: true });
+        // Using .webm as that's what MediaRecorder often defaults to.
+        // Python's whisper should handle .webm if ffmpeg is installed.
+        tempFilePath = path.join(tempDir, `recording-${Date.now()}.webm`);
+
+        await fsPromises.writeFile(tempFilePath, audioBuffer);
+        console.log('Audio saved to temporary file:', tempFilePath);
+
+        const commandToPython = {
+            type: 'transcribe_audio', // Matches the command in 
+            audio_path: tempFilePath,
+            request_id: requestId
+        };
+
+        const response = await sendToPython(commandToPython);
+        console.log('Transcription response from Python:', response);
+        return response; // Python backend should return { type: 'transcription_result', text: '...' } or error
+
+    } catch (error) {
+        console.error('Error handling transcribe-audio in main.js:', error);
+        return { 
+            type: 'error', 
+            message: `Main process error during transcription: ${error.message}`,
+            request_id: requestId 
+        };
+    } finally {
+        if (tempFilePath) {
+            try {
+                await fsPromises.unlink(tempFilePath);
+                console.log('Temporary audio file deleted:', tempFilePath);
+            } catch (delError) {
+                console.error('Error deleting temporary audio file:', delError);
+            }
+        }
+    }
+});
+
+// Handle 'start-recording' request from renderer
+ipcMain.handle('start-recording', async () => {
+    const requestId = uuidv4();
+    try {
+        const response = await sendToPython({
+            type: 'start_recording',
+            request_id: requestId
+        });
+        return response;
+    } catch (error) {
+        console.error('Error starting recording:', error);
+        return { 
+            type: 'error', 
+            message: `Failed to start recording: ${error.message}`,
+            request_id: requestId
+        };
+    }
+});
+
+// Handle 'stop-recording' request from renderer
+ipcMain.handle('stop-recording', async () => {
+    const requestId = uuidv4();
+    try {
+        const response = await sendToPython({
+            type: 'stop_recording',
+            request_id: requestId
+        });
+        return response;
+    } catch (error) {
+        console.error('Error stopping recording:', error);
+        return { 
+            type: 'error', 
+            message: `Failed to stop recording: ${error.message}`,
+            request_id: requestId
+        };
+    }
+});
+
+// Handle 'process-voice-query' request from renderer
+ipcMain.handle('process-voice-query', async (event, transcription) => {
+    const requestId = uuidv4();
+    try {
+        const response = await sendToPython({
+            type: 'voice_query',
+            transcription: transcription,
+            request_id: requestId
+        });
+        return response;
+    } catch (error) {
+        console.error('Error processing voice query:', error);
+        return {
+            type: 'error',
+            message: `Failed to process voice query: ${error.message}`,
+            request_id: requestId
+        };
     }
 });
 
