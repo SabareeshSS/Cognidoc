@@ -16,9 +16,9 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1000, // Example width
         height: 800, // Example height
-        icon: path.join(__dirname, 'src/assets/inquiroai.png'), // or .png
+        icon: path.join(getResourcePath('src/assets'), 'inquiroai.png'), // or .png
         webPreferences: {
-            preload: path.join(__dirname, 'src/js/preload.js'),
+            preload: path.join(app.isPackaged ? __dirname : '.', 'src/js/preload.js'),
             contextIsolation: true, // Recommended for security
             nodeIntegration: false, // Keep false
         },
@@ -26,7 +26,7 @@ function createWindow() {
     mainWindow.setMenu(null); // Remove the default menu bar
     console.log("Main window created."); // <-- Add log
 
-    mainWindow.loadFile(path.join(__dirname, 'src/interface.html'));
+    mainWindow.loadFile(path.join(app.isPackaged ? __dirname : '.', 'src/interface.html'));
     console.log("HTML file loaded."); // <-- Add log
 
     mainWindow.on('closed', () => {
@@ -44,7 +44,7 @@ function startPythonBackend() {
         const pythonExecutable = process.platform === 'win32' ? 'python' : 'python3';
         // Use the specified Python executable path
         // const pythonExecutable = 'D:/Python/env3.12/Scripts/python.exe';
-        const scriptPath = path.join(__dirname, 'python_backend/inquiroAI.py');
+        const scriptPath = path.join(getResourcePath('python_backend'), 'inquiroAI.py');
     
         // Ensure the script exists
         if (!fs.existsSync(scriptPath)) {
@@ -141,6 +141,11 @@ function startPythonBackend() {
         pythonProcess = null;
     });
 
+    // Debug logging for resource paths
+    console.log('App is packaged:', app.isPackaged);
+    console.log('__dirname:', __dirname);
+    console.log('process.resourcesPath:', process.resourcesPath);
+
     } catch (error) { // Catch errors from the spawn process itself or initial setup
         console.error('Error in startPythonBackend:', error);
         dialog.showErrorBox('Backend Error', 
@@ -162,6 +167,16 @@ app.whenReady().then(() => {
         }
     });
 });
+
+// Helper function to get correct path for resources
+function getResourcePath(relativePath) {
+    // In development, use path relative to __dirname
+    if (app.isPackaged) {
+        // In production, use path relative to process.resourcesPath
+        return path.join(process.resourcesPath, relativePath);
+    }
+    return path.join(__dirname, relativePath);
+}
 
 // Helper function to check and ensure models.json directory exists
 async function checkModelsConfig() {
